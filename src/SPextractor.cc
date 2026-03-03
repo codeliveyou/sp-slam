@@ -125,7 +125,23 @@ SPextractor::SPextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     }
     mnFeaturesPerLevel[nlevels-1] = std::max(nfeatures - sumFeatures, 0);
 
+    cudaStreamCreate(&mCudaStream);
     loadEngine(mEnginePath);
+}
+
+SPextractor::~SPextractor()
+{
+    freeBuffers();
+
+    if(mCudaStream) {
+        cudaStreamDestroy(mCudaStream);
+        mCudaStream = nullptr;
+    }
+
+    // Destroy in dependency order: context -> engine -> runtime
+    if(mContext) { delete mContext; mContext = nullptr; }
+    if(mEngine)  { delete mEngine;  mEngine  = nullptr; }
+    if(mRuntime) { delete mRuntime; mRuntime = nullptr; }
 }
 
 void SPextractor::loadEngine(const std::string& enginePath)
@@ -144,26 +160,68 @@ void SPextractor::loadEngine(const std::string& enginePath)
     file.read(engineData.data(), size);
     file.close();
 
-    mRuntime.reset(nvinfer1::createInferRuntime(gLogger));
-    mEngine.reset(mRuntime->deserializeCudaEngine(engineData.data(), size));
-    if(!mEngine)
+    mRuntime = nvinfer1::createInferRuntime(gLogger);
+    if(!mRuntime)
     {
-        std::cerr << "SPextractor: Failed to deserialize TensorRT engine" << std::endl;
+        std::cerr << "SPextractor: Failed to create TensorRT runtime" << std::endl;
         return;
     }
 
-    mContext.reset(mEngine->createExecutionContext());
-
-    // Determine input dimensions from engine
-    // Expect input tensor name "input" or index 0, shape [1, 1, H, W]
-    auto inputDims = mEngine->getTensorShape(mEngine->getIOTensorName(0));
-    if(inputDims.nbDims == 4) {
-        mInputH = inputDims.d[2];
-        mInputW = inputDims.d[3];
+    mEngine = mRuntime->deserializeCudaEngine(engineData.data(), size);
+    if(!mEngine)
+    {
+        std::cerr << "SPextractor: Failed to deserialize TensorRT engine." << std::endl;
+        std::cerr << "  Make sure the engine was built with TensorRT 10.x and matches your GPU." << std::endl;
+        return;
     }
 
-    std::cout << "SPextractor: TensorRT engine loaded. Input: "
-              << mInputH << "x" << mInputW << std::endl;
+    mContext = mEngine->createExecutionContext();
+    if(!mContext)
+    {
+        std::cerr << "SPextractor: Failed to create TensorRT execution context" << std::endl;
+        return;
+    }
+
+    const char* inputName = mEngine->getIOTensorName(0);
+    auto inputDims = mEngine->getTensorShape(inputName);
+    if(inputDims.nbDims == 4) {
+        mInputH = static_cast<int>(inputDims.d[2]);
+        mInputW = static_cast<int>(inputDims.d[3]);
+    }
+
+    std::cout << "SPextractor: TensorRT engine loaded (" << mEngine->getNbIOTensors()
+              << " IO tensors). Input: " << mInputH << "x" << mInputW << std::endl;
+}
+
+void SPextractor::allocateBuffers(int H, int W)
+{
+    int Hc = H / 8;
+    int Wc = W / 8;
+
+    size_t inputSize   = 1 * 1 * H * W * sizeof(float);
+    size_t heatmapSize = 1 * 65 * Hc * Wc * sizeof(float);
+    size_t descSize    = 1 * 256 * Hc * Wc * sizeof(float);
+
+    if(inputSize != mBufInputSize || heatmapSize != mBufHeatmapSize || descSize != mBufDescSize)
+    {
+        freeBuffers();
+
+        cudaMalloc(&mDevInput, inputSize);
+        cudaMalloc(&mDevHeatmap, heatmapSize);
+        cudaMalloc(&mDevDesc, descSize);
+
+        mBufInputSize   = inputSize;
+        mBufHeatmapSize = heatmapSize;
+        mBufDescSize    = descSize;
+    }
+}
+
+void SPextractor::freeBuffers()
+{
+    if(mDevInput)   { cudaFree(mDevInput);   mDevInput   = nullptr; }
+    if(mDevHeatmap) { cudaFree(mDevHeatmap); mDevHeatmap = nullptr; }
+    if(mDevDesc)    { cudaFree(mDevDesc);    mDevDesc    = nullptr; }
+    mBufInputSize = mBufHeatmapSize = mBufDescSize = 0;
 }
 
 void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& desc)
@@ -192,31 +250,40 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
     int Hc = inH / 8;
     int Wc = inW / 8;
 
-    size_t inputSize = 1 * 1 * inH * inW * sizeof(float);
-    size_t heatmapSize = 1 * 65 * Hc * Wc * sizeof(float);
-    size_t descSize = 1 * 256 * Hc * Wc * sizeof(float);
+    allocateBuffers(inH, inW);
 
-    void *d_input, *d_heatmap, *d_desc;
-    cudaMalloc(&d_input, inputSize);
-    cudaMalloc(&d_heatmap, heatmapSize);
-    cudaMalloc(&d_desc, descSize);
+    cudaMemcpyAsync(mDevInput, floatImg.ptr<float>(), mBufInputSize,
+                    cudaMemcpyHostToDevice, mCudaStream);
 
-    cudaMemcpy(d_input, floatImg.ptr<float>(), inputSize, cudaMemcpyHostToDevice);
-
-    const char* inputName = mEngine->getIOTensorName(0);
+    // Set dynamic input shape (required for TRT 10.x explicit batch)
+    const char* inputName   = mEngine->getIOTensorName(0);
     const char* heatmapName = mEngine->getIOTensorName(1);
-    const char* descName = mEngine->getIOTensorName(2);
+    const char* descName    = mEngine->getIOTensorName(2);
 
-    mContext->setTensorAddress(inputName, d_input);
-    mContext->setTensorAddress(heatmapName, d_heatmap);
-    mContext->setTensorAddress(descName, d_desc);
+    nvinfer1::Dims4 inputDims{1, 1, inH, inW};
+    mContext->setInputShape(inputName, inputDims);
 
-    mContext->enqueueV3(0);
-    cudaStreamSynchronize(0);
+    mContext->setTensorAddress(inputName,   mDevInput);
+    mContext->setTensorAddress(heatmapName, mDevHeatmap);
+    mContext->setTensorAddress(descName,    mDevDesc);
+
+    if(!mContext->enqueueV3(mCudaStream))
+    {
+        std::cerr << "SPextractor: enqueueV3 failed" << std::endl;
+        return;
+    }
 
     // Heatmap: [1, 65, Hc, Wc] -> softmax -> reshape -> [inH, inW]
     std::vector<float> heatmapData(65 * Hc * Wc);
-    cudaMemcpy(heatmapData.data(), d_heatmap, heatmapSize, cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(heatmapData.data(), mDevHeatmap, mBufHeatmapSize,
+                    cudaMemcpyDeviceToHost, mCudaStream);
+
+    // Descriptor: [1, 256, Hc, Wc]
+    std::vector<float> descData(256 * Hc * Wc);
+    cudaMemcpyAsync(descData.data(), mDevDesc, mBufDescSize,
+                    cudaMemcpyDeviceToHost, mCudaStream);
+
+    cudaStreamSynchronize(mCudaStream);
 
     // Softmax over 65 channels at each cell
     heatmap = cv::Mat::zeros(inH, inW, CV_32F);
@@ -247,16 +314,9 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
         }
     }
 
-    // Descriptor: [1, 256, Hc, Wc]
-    std::vector<float> descData(256 * Hc * Wc);
-    cudaMemcpy(descData.data(), d_desc, descSize, cudaMemcpyDeviceToHost);
     desc = cv::Mat(256, Hc * Wc, CV_32F);
     memcpy(desc.ptr<float>(), descData.data(), descData.size() * sizeof(float));
     desc = desc.reshape(0, {256, Hc, Wc});
-
-    cudaFree(d_input);
-    cudaFree(d_heatmap);
-    cudaFree(d_desc);
 }
 
 void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoints,
@@ -298,7 +358,7 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
 
     keypoints = rawKps;
 
-    // Interpolate descriptors at keypoint locations using grid_sample equivalent
+    // Interpolate descriptors at keypoint locations
     if(!keypoints.empty() && !descTensor.empty()) {
         descriptors = cv::Mat(keypoints.size(), SP_DESC_DIM, CV_32F);
 
@@ -318,7 +378,6 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
                 norm += val * val;
             }
 
-            // L2 normalize
             norm = sqrt(norm);
             if(norm > 1e-6) {
                 for(int c = 0; c < SP_DESC_DIM; c++)
@@ -492,7 +551,6 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
             detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
         }
 
-        // Filter keypoints that are too close to the border
         vector<cv::KeyPoint> filteredKeys;
         cv::Mat filteredDesc;
         for(size_t i = 0; i < vToDistributeKeys.size(); i++) {
@@ -509,7 +567,6 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
                                                               minBorderY, maxBorderY,
                                                               mnFeaturesPerLevel[level], level);
 
-        // Match distributed keypoints back to their descriptors
         cv::Mat distributedDesc(distributedKeys.size(), SP_DESC_DIM, CV_32F);
         for(size_t i = 0; i < distributedKeys.size(); i++) {
             for(size_t j = 0; j < filteredKeys.size(); j++) {
@@ -535,7 +592,6 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
         allDescriptors[level] = distributedDesc;
     }
 
-    // Compute total number of keypoints
     int nkeypoints = 0;
     for(int level = 0; level < nlevels; level++)
         nkeypoints += (int)allKeypoints[level].size();
@@ -630,7 +686,6 @@ int SPextractor::operator()(InputArray _image, InputArray _mask,
         offset += nkeypointsLevel;
     }
 
-    // Lapping area: return count of mono keypoints
     if(vLappingArea.size() >= 2) {
         monoIndex = _keypoints.size();
     }
