@@ -99,6 +99,14 @@ protected:
 
     void loadModel(const std::string& modelPath);
     void runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& desc);
+
+    // Letterbox transform parameters (set by runInference, used by detect)
+    float mLetterboxScaleX = 1.0f;
+    float mLetterboxScaleY = 1.0f;
+    int mPadLeft = 0;
+    int mPadTop = 0;
+    int mResizedW = 0;
+    int mResizedH = 0;
 };
 
 } // namespace ORB_SLAM3

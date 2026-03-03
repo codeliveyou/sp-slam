@@ -31,8 +31,8 @@ using namespace std;
 namespace ORB_SLAM3
 {
 
-    const float ORBmatcher::TH_HIGH = 0.7f;
-    const float ORBmatcher::TH_LOW = 0.3f;
+    const float ORBmatcher::TH_HIGH = 0.9f;
+    const float ORBmatcher::TH_LOW = 0.5f;
     const int ORBmatcher::HISTO_LENGTH = 30;
 
     ORBmatcher::ORBmatcher(float nnratio, bool checkOri): mfNNratio(nnratio), mbCheckOrientation(checkOri)
@@ -654,6 +654,12 @@ namespace ORB_SLAM3
             rotHist[i].reserve(500);
         const float factor = 1.0f/HISTO_LENGTH;
 
+        // Debug: track distance distribution
+        int dbgSearched = 0;
+        float dbgMinDist = FLT_MAX, dbgMaxDist = 0;
+        double dbgSumDist = 0;
+        int dbgBins[10] = {}; // [0,0.1), [0.1,0.2), ..., [0.9,1.0+)
+
         vector<float> vMatchedDistance(F2.mvKeysUn.size(),FLT_MAX);
         vector<int> vnMatches21(F2.mvKeysUn.size(),-1);
 
@@ -696,6 +702,15 @@ namespace ORB_SLAM3
                 {
                     bestDist2=dist;
                 }
+            }
+
+            if(bestIdx2 >= 0) {
+                dbgSearched++;
+                if(bestDist < dbgMinDist) dbgMinDist = bestDist;
+                if(bestDist > dbgMaxDist) dbgMaxDist = bestDist;
+                dbgSumDist += bestDist;
+                int bin = std::min((int)(bestDist * 10), 9);
+                if(bin >= 0 && bin < 10) dbgBins[bin]++;
             }
 
             if(bestDist<=TH_LOW)
@@ -757,6 +772,15 @@ namespace ORB_SLAM3
         for(size_t i1=0, iend1=vnMatches12.size(); i1<iend1; i1++)
             if(vnMatches12[i1]>=0)
                 vbPrevMatched[i1]=F2.mvKeysUn[vnMatches12[i1]].pt;
+
+        std::cout << "[SearchForInit] searched=" << dbgSearched
+                  << " matched=" << nmatches << " TH_LOW=" << TH_LOW
+                  << " dist_range=[" << dbgMinDist << "," << dbgMaxDist << "]"
+                  << " mean=" << (dbgSearched > 0 ? dbgSumDist/dbgSearched : 0)
+                  << " hist:";
+        for(int b = 0; b < 10; b++)
+            std::cout << " " << b*0.1f << "-" << (b+1)*0.1f << ":" << dbgBins[b];
+        std::cout << std::endl;
 
         return nmatches;
     }

@@ -25,7 +25,6 @@ const int SP_DESC_DIM = 256;
 
 const float SP_THRESHOLD_HIGH = 0.015f;
 const float SP_THRESHOLD_LOW  = 0.005f;
-const float SP_DESC_SCALE     = 512.0f;
 
 
 void ExtractorNode::DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4)
@@ -232,13 +231,37 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
         std::cerr << "SPextractor: ONNX session not initialized" << std::endl;
         return;
     }
-    // std::cout << "SPextractor.cc [Line 230]" << std::endl;
-    int H = img.rows;
-    int W = img.cols;
-    // std::cout << "SPextractor.cc [Line 233]" << std::endl;
+
+    int origH = img.rows;
+    int origW = img.cols;
+
+    // Letterbox: scale to fit model input while preserving aspect ratio, pad the rest
+    mPadTop = 0;
+    mPadLeft = 0;
+    mLetterboxScaleX = 1.0f;
+    mLetterboxScaleY = 1.0f;
+    mResizedW = origW;
+    mResizedH = origH;
     cv::Mat inputImg;
-    if(!mDynamicShape && mInputH > 0 && mInputW > 0 && (H != mInputH || W != mInputW)) {
-        cv::resize(img, inputImg, cv::Size(mInputW, mInputH));
+    if(!mDynamicShape && mInputH > 0 && mInputW > 0 && (origH != mInputH || origW != mInputW)) {
+        float uniformScale = std::min((float)mInputW / origW, (float)mInputH / origH);
+        int newW = ((int)(origW * uniformScale) / 8) * 8;
+        int newH = ((int)(origH * uniformScale) / 8) * 8;
+        if(newW < 8) newW = 8;
+        if(newH < 8) newH = 8;
+
+        mLetterboxScaleX = (float)newW / origW;
+        mLetterboxScaleY = (float)newH / origH;
+        mResizedW = newW;
+        mResizedH = newH;
+
+        mPadLeft = ((mInputW - newW) / 2 / 8) * 8;
+        mPadTop  = ((mInputH - newH) / 2 / 8) * 8;
+
+        cv::Mat resized;
+        cv::resize(img, resized, cv::Size(newW, newH));
+        inputImg = cv::Mat::zeros(mInputH, mInputW, img.type());
+        resized.copyTo(inputImg(cv::Rect(mPadLeft, mPadTop, newW, newH)));
     } else {
         inputImg = img;
     }
@@ -261,18 +284,17 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
         for(int r = 0; r < inH; r++)
             memcpy(inputTensorValues.data() + r * inW, floatImg.ptr<float>(r), inW * sizeof(float));
     }
-    // std::cout << "SPextractor.cc [Line 259]" << std::endl;
+
     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
         memoryInfo, inputTensorValues.data(), inputTensorSize, inputShape.data(), inputShape.size());
-    // std::cout << "SPextractor.cc [Line 263]" << std::endl;
+
     try {
         auto outputTensors = mSession->Run(
             Ort::RunOptions{nullptr},
             mInputNames.data(), &inputTensor, 1,
             mOutputNames.data(), mOutputNames.size());
-        // std::cout << "SPextractor.cc [Line 269]" << std::endl;
-        // Identify which output is semi (65 channels) and which is desc (256 channels)
+
         int semiIdx = -1, descIdx = -1;
         for(size_t i = 0; i < outputTensors.size(); i++) {
             auto info = outputTensors[i].GetTensorTypeAndShapeInfo();
@@ -284,9 +306,8 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
                     descIdx = static_cast<int>(i);
             }
         }
-        // std::cout << "SPextractor.cc [Line 282]" << std::endl;
+
         if(semiIdx < 0 || descIdx < 0) {
-            // Fallback: first output = semi, second = desc
             if(outputTensors.size() >= 2) {
                 semiIdx = 0;
                 descIdx = 1;
@@ -295,6 +316,24 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
                 return;
             }
         }
+
+        // Verify and log actual tensor shapes (once)
+        static bool shapeLogged = false;
+        if(!shapeLogged) {
+            for(size_t i = 0; i < outputTensors.size(); i++) {
+                auto shape = outputTensors[i].GetTensorTypeAndShapeInfo().GetShape();
+                std::cout << "[SPextractor] output[" << i << "] shape=[";
+                for(size_t s = 0; s < shape.size(); s++)
+                    std::cout << (s>0?",":"") << shape[s];
+                std::cout << "]" << std::endl;
+            }
+            shapeLogged = true;
+        }
+
+        // Use ACTUAL descriptor tensor spatial dimensions instead of assuming Hc/Wc
+        auto descShape = outputTensors[descIdx].GetTensorTypeAndShapeInfo().GetShape();
+        int actualDescHc = (descShape.size() >= 3) ? descShape[descShape.size()-2] : Hc;
+        int actualDescWc = (descShape.size() >= 3) ? descShape[descShape.size()-1] : Wc;
 
         const float* semiData = outputTensors[semiIdx].GetTensorData<float>();
 
@@ -308,14 +347,10 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
                 if(v < 0.0f) hasNegative = true;
             }
             needSoftmax = hasNegative || (channelSum < 0.5f) || (channelSum > 1.5f);
-#ifdef SP_DEBUG_VIS
-            std::cout << "  semi channel sum at (0,0)=" << channelSum
-                      << " hasNeg=" << hasNegative
-                      << " -> " << (needSoftmax ? "apply softmax" : "already softmaxed, reshape only")
-                      << std::endl;
-#endif
         }
 
+        // Build heatmap at MODEL resolution (inH x inW)
+        // Keypoint extraction and descriptor sampling both happen in model space
         heatmap = cv::Mat::zeros(inH, inW, CV_32F);
         for(int y = 0; y < Hc; y++) {
             for(int x = 0; x < Wc; x++) {
@@ -343,32 +378,18 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
                 for(int c = 0; c < 64; c++) {
                     int dy = c / 8;
                     int dx = c % 8;
-                    int py = y * 8 + dy;
                     int px = x * 8 + dx;
+                    int py = y * 8 + dy;
                     if(py < inH && px < inW)
                         heatmap.at<float>(py, px) = probs[c];
                 }
             }
         }
-        {
-            double hMin, hMax;
-            cv::minMaxLoc(heatmap, &hMin, &hMax);
-            std::cout << "  Heatmap " << heatmap.cols << "x" << heatmap.rows
-                      << " min=" << hMin << " max=" << hMax << std::endl;
 
-            cv::Mat heatVis;
-            if(hMax > hMin)
-                heatmap.convertTo(heatVis, CV_8U, 255.0 / hMax);
-            else
-                heatmap.convertTo(heatVis, CV_8U, 255.0);
-            cv::applyColorMap(heatVis, heatVis, cv::COLORMAP_JET);
-            cv::imshow("SP heatmap", heatVis);
-        }
-        // std::cout << "SPextractor.cc [Line 323]" << std::endl;
         const float* descData = outputTensors[descIdx].GetTensorData<float>();
-        desc = cv::Mat(256, Hc * Wc, CV_32F);
-        memcpy(desc.ptr<float>(), descData, 256 * Hc * Wc * sizeof(float));
-        desc = desc.reshape(0, {256, Hc, Wc});
+        desc = cv::Mat(256, actualDescHc * actualDescWc, CV_32F);
+        memcpy(desc.ptr<float>(), descData, 256 * actualDescHc * actualDescWc * sizeof(float));
+        desc = desc.reshape(0, {256, actualDescHc, actualDescWc});
     }
     catch(const Ort::Exception& e) {
         std::cerr << "SPextractor: ONNX inference failed ("
@@ -381,19 +402,37 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
 {
     cv::Mat heatmap, descTensor;
     runInference(img, heatmap, descTensor);
-    // std::cout << "SPextractor.cc [Line 340]" << std::endl;
+
     if(heatmap.empty()) return;
 
-    int H = heatmap.rows;
-    int W = heatmap.cols;
-    int Hc = H / 8;
-    int Wc = W / 8;
+    int origH = img.rows;
+    int origW = img.cols;
 
-    std::vector<cv::KeyPoint> rawKps;
-    for(int y = 1; y < H - 1; y++) {
-        for(int x = 1; x < W - 1; x++) {
+    // Heatmap is at MODEL resolution (e.g. 512x512)
+    int mH = heatmap.rows;
+    int mW = heatmap.cols;
+
+    // Descriptor grid dimensions
+    int descHc = descTensor.empty() ? 0 : descTensor.size[1];
+    int descWc = descTensor.empty() ? 0 : descTensor.size[2];
+
+    // Only search for keypoints within the non-padded image region
+    int roiX0 = mPadLeft + 1;
+    int roiY0 = mPadTop + 1;
+    int roiX1 = mPadLeft + mResizedW - 1;
+    int roiY1 = mPadTop + mResizedH - 1;
+    roiX1 = std::min(roiX1, mW - 1);
+    roiY1 = std::min(roiY1, mH - 1);
+
+    // Extract keypoints in MODEL pixel space with NMS
+    struct ModelKeypoint {
+        int mx, my;
+        float score;
+    };
+    std::vector<ModelKeypoint> modelKps;
+    for(int y = roiY0; y < roiY1; y++) {
+        for(int x = roiX0; x < roiX1; x++) {
             float score = heatmap.at<float>(y, x);
-            // std::cout << "detect: " << score << " vs " << threshold << "\n";
             if(score < threshold) continue;
 
             bool isMax = true;
@@ -402,65 +441,102 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
                     if((dy != 0 || dx != 0) && heatmap.at<float>(y+dy, x+dx) >= score)
                         isMax = false;
 
-            if(isMax) {
-                cv::KeyPoint kp;
-                kp.pt = cv::Point2f((float)x, (float)y);
-                kp.response = score;
-                kp.size = 8.0f;
-                kp.octave = 0;
-                rawKps.push_back(kp);
-            }
+            if(isMax)
+                modelKps.push_back({x, y, score});
         }
     }
 
-    
-    keypoints = rawKps;
-    std::cout << "Keypoints: " << keypoints.size() << std::endl;
-    
-    if(!keypoints.empty() && !descTensor.empty()) {
-        descriptors = cv::Mat(keypoints.size(), SP_DESC_DIM, CV_32F);
+    if(modelKps.empty()) return;
 
-        const float* descPtr = descTensor.ptr<float>();
+    const float* descPtr = descTensor.empty() ? nullptr : descTensor.ptr<float>();
 
-        for(size_t i = 0; i < keypoints.size(); i++) {
-            float sx = keypoints[i].pt.x / (float)(W) * (float)(Wc);
-            float sy = keypoints[i].pt.y / (float)(H) * (float)(Hc);
-
-            int ix = std::min(std::max((int)sx, 0), Wc - 1);
-            int iy = std::min(std::max((int)sy, 0), Hc - 1);
-
-            float norm = 0.0f;
-            for(int c = 0; c < SP_DESC_DIM; c++) {
-                float val = descPtr[c * Hc * Wc + iy * Wc + ix];
-                descriptors.at<float>(i, c) = val;
-                norm += val * val;
-            }
-
-            norm = sqrt(norm);
-            if(norm > 1e-6) {
-                for(int c = 0; c < SP_DESC_DIM; c++)
-                    descriptors.at<float>(i, c) /= norm;
+    // One-time descriptor grid diagnostic
+    static bool descDiagDone = false;
+    if(!descDiagDone && descPtr && descHc > 0 && descWc > 0) {
+        descDiagDone = true;
+        float gMin = 1e9, gMax = -1e9;
+        double gSum = 0;
+        int gCount = 0;
+        // Check a few grid cells in the image region
+        for(int gy = mPadTop/8 + 1; gy < (mPadTop + mResizedH)/8 - 1 && gy < descHc; gy += std::max(1, descHc/8)) {
+            for(int gx = mPadLeft/8 + 1; gx < (mPadLeft + mResizedW)/8 - 1 && gx < descWc; gx += std::max(1, descWc/8)) {
+                float cellNorm = 0;
+                for(int c = 0; c < SP_DESC_DIM; c++) {
+                    float v = descPtr[c * descHc * descWc + gy * descWc + gx];
+                    cellNorm += v * v;
+                    if(v < gMin) gMin = v;
+                    if(v > gMax) gMax = v;
+                }
+                cellNorm = sqrt(cellNorm);
+                gSum += cellNorm;
+                gCount++;
             }
         }
+        std::cout << "[SPextractor] desc_grid=" << descWc << "x" << descHc
+                  << " value_range=[" << gMin << "," << gMax << "]"
+                  << " avg_norm=" << (gCount > 0 ? gSum/gCount : 0)
+                  << " image_grid_region=[" << mPadLeft/8 << "-" << (mPadLeft+mResizedW)/8
+                  << ", " << mPadTop/8 << "-" << (mPadTop+mResizedH)/8 << "]"
+                  << " raw_kps=" << modelKps.size() << std::endl;
     }
-    {
-        cv::Mat vis;
-        if(img.channels() == 1)
-            cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
-        else
-            vis = img.clone();
 
-        for(size_t i = 0; i < keypoints.size(); i++) {
-            float r = keypoints[i].response;
-            int g = std::min(255, (int)(r * 2550));
-            cv::circle(vis, keypoints[i].pt, 1, cv::Scalar(0, 0, 255), -1);
+    keypoints.resize(modelKps.size());
+    descriptors = cv::Mat::zeros(modelKps.size(), SP_DESC_DIM, CV_32F);
+
+    for(size_t i = 0; i < modelKps.size(); i++) {
+        int mx = modelKps[i].mx;
+        int my = modelKps[i].my;
+
+        // Convert model pixel coords to original image coords
+        float origX = ((float)mx - mPadLeft) / mLetterboxScaleX;
+        float origY = ((float)my - mPadTop) / mLetterboxScaleY;
+        origX = std::max(0.0f, std::min(origX, (float)(origW - 1)));
+        origY = std::max(0.0f, std::min(origY, (float)(origH - 1)));
+
+        keypoints[i].pt = cv::Point2f(origX, origY);
+        keypoints[i].response = modelKps[i].score;
+        keypoints[i].size = 8.0f;
+        keypoints[i].octave = 0;
+
+        if(!descPtr) continue;
+
+        // Sample descriptor at MODEL grid position (clean integer-derived coords)
+        float sx = (float)mx / 8.0f;
+        float sy = (float)my / 8.0f;
+
+        // Bilinear interpolation (matches PyTorch grid_sample)
+        int ix0 = (int)floor(sx);
+        int iy0 = (int)floor(sy);
+        int ix1 = ix0 + 1;
+        int iy1 = iy0 + 1;
+        float fx = sx - ix0;
+        float fy = sy - iy0;
+
+        ix0 = std::max(0, std::min(ix0, descWc - 1));
+        ix1 = std::max(0, std::min(ix1, descWc - 1));
+        iy0 = std::max(0, std::min(iy0, descHc - 1));
+        iy1 = std::max(0, std::min(iy1, descHc - 1));
+
+        float w00 = (1.0f - fx) * (1.0f - fy);
+        float w10 = fx * (1.0f - fy);
+        float w01 = (1.0f - fx) * fy;
+        float w11 = fx * fy;
+
+        float norm = 0.0f;
+        for(int c = 0; c < SP_DESC_DIM; c++) {
+            float val = w00 * descPtr[c * descHc * descWc + iy0 * descWc + ix0]
+                      + w10 * descPtr[c * descHc * descWc + iy0 * descWc + ix1]
+                      + w01 * descPtr[c * descHc * descWc + iy1 * descWc + ix0]
+                      + w11 * descPtr[c * descHc * descWc + iy1 * descWc + ix1];
+            descriptors.at<float>(i, c) = val;
+            norm += val * val;
         }
-        std::cout << "  detect result: " << keypoints.size() << " keypoints, "
-                  << "desc " << (descriptors.empty() ? "EMPTY" :
-                     std::to_string(descriptors.rows) + "x" + std::to_string(descriptors.cols))
-                  << std::endl;
-        cv::imshow("SP keypoints", vis);
-        cv::waitKey(1);
+
+        norm = sqrt(norm);
+        if(norm > 1e-6) {
+            for(int c = 0; c < SP_DESC_DIM; c++)
+                descriptors.at<float>(i, c) /= norm;
+        }
     }
 }
 
@@ -471,11 +547,11 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
 {
     const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
     const float hX = static_cast<float>(maxX-minX)/nIni;
-    // std::cout << "SPextractor.cc [Line 408]" << std::endl;
+
     list<ExtractorNode> lNodes;
     vector<ExtractorNode*> vpIniNodes;
     vpIniNodes.resize(nIni);
-    // std::cout << "SPextractor.cc [Line 412]" << std::endl;
+
     for(int i=0; i<nIni; i++)
     {
         ExtractorNode ni;
@@ -484,21 +560,20 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
         ni.BL = cv::Point2i(ni.UL.x,maxY-minY);
         ni.BR = cv::Point2i(ni.UR.x,maxY-minY);
         ni.vKeys.reserve(vToDistributeKeys.size());
-        // std::cout << "SPextractor.cc [Line 421]" << std::endl;
+
         lNodes.push_back(ni);
         vpIniNodes[i] = &lNodes.back();
     }
-    // std::cout << "SPextractor.cc [Line 425]" << std::endl;
+
     for(size_t i=0;i<vToDistributeKeys.size();i++)
     {
         const cv::KeyPoint &kp = vToDistributeKeys[i];
-        // std::cout << vpIniNodes.size() << " " << (int)(kp.pt.x/hX) << std::endl;
-        // std::cout << vpIniNodes[kp.pt.x/hX]->vKeys.size() << std::endl;
-        if(vpIniNodes.size() > (int)(kp.pt.x/hX)) {
-            vpIniNodes[kp.pt.x/hX]->vKeys.push_back(kp);
-        }
+        int idx = (int)(kp.pt.x/hX);
+        if(idx >= nIni) idx = nIni - 1;
+        if(idx < 0) idx = 0;
+        vpIniNodes[idx]->vKeys.push_back(kp);
     }
-    // std::cout << "SPextractor.cc [Line 431]" << std::endl;
+
     list<ExtractorNode>::iterator lit = lNodes.begin();
     while(lit!=lNodes.end())
     {
@@ -512,12 +587,12 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
         else
             lit++;
     }
-    // std::cout << "SPextractor.cc [Line 445]" << std::endl;
+
     bool bFinish = false;
     int iteration = 0;
     vector<pair<int,ExtractorNode*> > vSizeAndPointerToNode;
     vSizeAndPointerToNode.reserve(lNodes.size()*4);
-    // std::cout << "SPextractor.cc [Line 450]" << std::endl;
+
     while(!bFinish)
     {
         iteration++;
@@ -582,7 +657,7 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
             }
         }
     }
-    // std::cout << "SPextractor.cc [Line 515]" << std::endl;
+
     vector<cv::KeyPoint> vResultKeys;
     vResultKeys.reserve(nfeatures);
     for(list<ExtractorNode>::iterator lit=lNodes.begin(); lit!=lNodes.end(); lit++)
@@ -609,70 +684,59 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
 void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints, cv::Mat &_desc)
 {
     allKeypoints.resize(nlevels);
-    // std::cout << "SPextractor.cc [Line 542]" << std::endl;
+
     vector<cv::Mat> allDescriptors(nlevels);
-    // std::cout << "SPextractor.cc [Line 544] " << nlevels << std::endl;
+
     for(int level = 0; level < nlevels; level++)
     {
-        // std::cout << "Level " << level << std::endl;
         const int minBorderX = EDGE_THRESHOLD-3;
         const int minBorderY = minBorderX;
         const int maxBorderX = mvImagePyramid[level].cols - EDGE_THRESHOLD+3;
         const int maxBorderY = mvImagePyramid[level].rows - EDGE_THRESHOLD+3;
-        // std::cout << "Cols: " << mvImagePyramid[level].cols << " , Rows: " << mvImagePyramid[level].rows << std::endl;
 
         vector<cv::KeyPoint> vToDistributeKeys;
         vToDistributeKeys.reserve(nfeatures*10);
 
         cv::Mat levelDesc;
-        // std::cout << "SPextractor.cc [Line 556]" << std::endl;
+
         float threshold = SP_THRESHOLD_HIGH;
-        // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, 0.017);
         detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
-        // cv::Mat toSave = mvImagePyramid[level].clone();
-        // // std::cout << "Detected: " << vToDistributeKeys.size() << std::endl;
-        // for(int i = 0; i < 10; i++) {
-        //     // std::cout << vToDistributeKeys[i].pt.x << ", " << vToDistributeKeys[i].pt.y << std::endl;
-        //     cv::circle(toSave, cv::Point(vToDistributeKeys[i].pt.x, vToDistributeKeys[i].pt.y), 1, cv::Scalar(0, 0, 255));
-        // }
-        // cv::imshow("Image", toSave);
-        // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
-        // std::cout << "SPextractor.cc [Line 559]" << std::endl;
-        // std::cout << "Keypoints: " << vToDistributeKeys.size() << std::endl;
+
         if(vToDistributeKeys.empty()) {
             threshold = SP_THRESHOLD_LOW;
-            // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, 0.005);
             detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
         }
-        // std::cout << "SPextractor.cc [Line 564]" << std::endl;
+
+        // Filter keypoints to valid border region, shift coords for OctTree
+        // Use class_id to track original index for descriptor lookup
         vector<cv::KeyPoint> filteredKeys;
-        cv::Mat filteredDesc;
         for(size_t i = 0; i < vToDistributeKeys.size(); i++) {
             if(vToDistributeKeys[i].pt.x >= minBorderX && vToDistributeKeys[i].pt.x < maxBorderX &&
                vToDistributeKeys[i].pt.y >= minBorderY && vToDistributeKeys[i].pt.y < maxBorderY) {
-                filteredKeys.push_back(vToDistributeKeys[i]);
-                if(!levelDesc.empty())
-                    filteredDesc.push_back(levelDesc.row(i));
+                cv::KeyPoint kp = vToDistributeKeys[i];
+                kp.pt.x -= minBorderX;
+                kp.pt.y -= minBorderY;
+                kp.class_id = (int)i;
+                filteredKeys.push_back(kp);
             }
         }
-        // std::cout << "SPextractor.cc [Line 577]" << std::endl;
-        // std::cout << filteredKeys.size() << " " << minBorderX << " " << maxBorderX << " " << minBorderY << " " << maxBorderY << " " << mnFeaturesPerLevel[level] << " " << level << std::endl;
+
         vector<KeyPoint> distributedKeys = DistributeOctTree(filteredKeys,
-                                                              minBorderX, maxBorderX,
-                                                              minBorderY, maxBorderY,
+                                                              0, maxBorderX - minBorderX,
+                                                              0, maxBorderY - minBorderY,
                                                               mnFeaturesPerLevel[level], level);
-        // std::cout << "SPextractor.cc [Line 582]" << std::endl;
-        cv::Mat distributedDesc(distributedKeys.size(), SP_DESC_DIM, CV_32F);
-        for(size_t i = 0; i < distributedKeys.size(); i++) {
-            for(size_t j = 0; j < filteredKeys.size(); j++) {
-                if(abs(distributedKeys[i].pt.x - filteredKeys[j].pt.x) < 0.5f &&
-                   abs(distributedKeys[i].pt.y - filteredKeys[j].pt.y) < 0.5f) {
-                    filteredDesc.row(j).copyTo(distributedDesc.row(i));
-                    break;
-                }
+
+        // Look up descriptors using tracked indices
+        cv::Mat distributedDesc = cv::Mat::zeros(distributedKeys.size(), SP_DESC_DIM, CV_32F);
+        if(!levelDesc.empty()) {
+            for(size_t i = 0; i < distributedKeys.size(); i++) {
+                int origIdx = distributedKeys[i].class_id;
+                if(origIdx >= 0 && origIdx < levelDesc.rows)
+                    levelDesc.row(origIdx).copyTo(distributedDesc.row(i));
             }
         }
-        // std::cout << "SPextractor.cc [Line 593]" << std::endl;
+
+        // Restore border offset and scale to original image coordinates
         const float scaleFactor_level = mvScaleFactor[level];
         const int nkps = distributedKeys.size();
         for(int i = 0; i < nkps; i++) {
@@ -682,7 +746,7 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
             distributedKeys[i].octave = level;
             distributedKeys[i].size = PATCH_SIZE * scaleFactor_level;
         }
-        // std::cout << "SPextractor.cc [Line 603]" << std::endl;
+
         allKeypoints[level] = distributedKeys;
         allDescriptors[level] = distributedDesc;
     }
@@ -742,31 +806,30 @@ int SPextractor::operator()(InputArray _image, InputArray _mask,
 {
     if(_image.empty())
         return -1;
-    // std::cout << "SPextractor.cc [Line 661]" << std::endl;
+
     Mat image = _image.getMat();
     assert(image.type() == CV_8UC1 );
-    // std::cout << "SPextractor.cc [Line 664]" << std::endl;
+
     ComputePyramid(image);
-    // std::cout << "SPextractor.cc [Line 666]" << std::endl;
+
     vector<vector<KeyPoint>> allKeypoints;
     cv::Mat descriptors;
     ComputeKeyPointsOctTree(allKeypoints, descriptors);
-    // std::cout << "SPextractor.cc [Line 670]" << std::endl;
+
     int nkeypoints = 0;
     for(int level = 0; level < nlevels; ++level)
         nkeypoints += (int)allKeypoints[level].size();
-    // std::cout << "SPextractor.cc [Line 674]" << std::endl;
+
     if(nkeypoints == 0) {
         _descriptors.release();
     } else {
         _descriptors.create(nkeypoints, SP_DESC_DIM, CV_32F);
-        cv::Mat scaled = descriptors * SP_DESC_SCALE;
-        scaled.copyTo(_descriptors.getMat());
+        descriptors.copyTo(_descriptors.getMat());
     }
-    // std::cout << "SPextractor.cc [Line 681]" << std::endl;
+
     _keypoints.clear();
     _keypoints.reserve(nkeypoints);
-    // std::cout << "SPextractor.cc [Line 684]" << std::endl;
+
     int offset = 0;
     int monoIndex = 0;
     for(int level = 0; level < nlevels; level++) {
@@ -781,11 +844,30 @@ int SPextractor::operator()(InputArray _image, InputArray _mask,
 
         offset += nkeypointsLevel;
     }
-    // std::cout << "SPextractor.cc [Line 699]" << std::endl;
+
     if(vLappingArea.size() >= 2) {
         monoIndex = _keypoints.size();
     }
-    // std::cout << "SPextractor.cc [Line 703]" << std::endl;
+
+    // --- DEBUG: keypoint extraction summary ---
+    std::cout << "[SPextractor] image=" << image.cols << "x" << image.rows
+              << " model=" << (mDynamicShape ? "dynamic" : std::to_string(mInputW)+"x"+std::to_string(mInputH))
+              << " letterbox_scale=" << mLetterboxScaleX << "x" << mLetterboxScaleY << " pad=" << mPadLeft << "," << mPadTop
+              << " levels=" << nlevels
+              << " total_keypoints=" << nkeypoints;
+    if(nkeypoints > 0) {
+        float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+        for(const auto& kp : _keypoints) {
+            if(kp.pt.x < minX) minX = kp.pt.x;
+            if(kp.pt.x > maxX) maxX = kp.pt.x;
+            if(kp.pt.y < minY) minY = kp.pt.y;
+            if(kp.pt.y > maxY) maxY = kp.pt.y;
+        }
+        std::cout << " kp_range_x=[" << minX << "," << maxX << "]"
+                  << " kp_range_y=[" << minY << "," << maxY << "]";
+    }
+    std::cout << std::endl;
+
     return monoIndex;
 }
 

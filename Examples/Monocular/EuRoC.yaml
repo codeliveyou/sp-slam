@@ -34,7 +34,7 @@ Camera.width: 752
 Camera.height: 480
 
 Camera.newWidth: 600
-Camera.newHeight: 350
+Camera.newHeight: 352
 
 # Camera frames per second 
 Camera.fps: 20
@@ -46,14 +46,15 @@ Camera.RGB: 1
 # ORB Parameters
 #--------------------------------------------------------------------------------------------
 
-# ORB Extractor: Number of features per image
+# SuperPoint Extractor: Number of features per image
 ORBextractor.nFeatures: 1000
 
-# ORB Extractor: Scale factor between levels in the scale pyramid 	
+# SuperPoint Extractor: Scale factor between levels in the scale pyramid 	
 ORBextractor.scaleFactor: 1.2
 
-# ORB Extractor: Number of levels in the scale pyramid	
-ORBextractor.nLevels: 8
+# SuperPoint Extractor: Number of levels in the scale pyramid
+# SuperPoint has built-in scale invariance; fewer levels = faster
+ORBextractor.nLevels: 1
 
 # ORB Extractor: Fast threshold
 # Image is divided in a grid. At each cell FAST are extracted imposing a minimum response.

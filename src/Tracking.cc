@@ -2538,6 +2538,11 @@ void Tracking::MonocularInitialization()
         ORBmatcher matcher(0.9,true);
         int nmatches = matcher.SearchForInitialization(mInitialFrame,mCurrentFrame,mvbPrevMatched,mvIniMatches,100);
 
+        std::cout << "[MonoInit] frame=" << mCurrentFrame.mnId
+                  << " initKps=" << mInitialFrame.mvKeysUn.size()
+                  << " currKps=" << mCurrentFrame.mvKeysUn.size()
+                  << " matches=" << nmatches << std::endl;
+
         // Check if there are enough correspondences
         if(nmatches<100)
         {
@@ -2548,7 +2553,9 @@ void Tracking::MonocularInitialization()
         Sophus::SE3f Tcw;
         vector<bool> vbTriangulated; // Triangulated Correspondences (mvIniMatches)
 
-        if(mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated))
+        bool bReconstructed = mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated);
+        std::cout << "[MonoInit] ReconstructWithTwoViews=" << (bReconstructed ? "SUCCESS" : "FAILED") << std::endl;
+        if(bReconstructed)
         {
             for(size_t i=0, iend=mvIniMatches.size(); i<iend;i++)
             {
