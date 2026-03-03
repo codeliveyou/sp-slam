@@ -599,7 +599,7 @@ void Tracking::newParameterLoader(Settings *settings) {
     int fMinThFAST = settings->minThFAST();
     float fScaleFactor = settings->scaleFactor();
 
-    mSPEnginePath = "superpoint.engine";
+    mSPEnginePath = "superpoint.onnx";
 
     mpORBextractorLeft = new SPextractor(nFeatures,fScaleFactor,nLevels,(float)fIniThFAST/255.0f,(float)fMinThFAST/255.0f,mSPEnginePath);
 
@@ -1284,11 +1284,16 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
         b_miss_params = true;
     }
 
-    node = fSettings["SuperPoint.enginePath"];
+    node = fSettings["SuperPoint.modelPath"];
     if(!node.empty() && node.isString())
         mSPEnginePath = (std::string) node;
-    else
-        mSPEnginePath = "superpoint.engine";
+    else {
+        node = fSettings["SuperPoint.enginePath"];
+        if(!node.empty() && node.isString())
+            mSPEnginePath = (std::string) node;
+        else
+            mSPEnginePath = "superpoint.onnx";
+    }
 
     if(b_miss_params)
     {
@@ -1309,7 +1314,7 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
     cout << "- Scale Factor: " << fScaleFactor << endl;
     cout << "- Initial Threshold: " << fIniThFAST << " -> " << (float)fIniThFAST/255.0f << endl;
     cout << "- Minimum Threshold: " << fMinThFAST << " -> " << (float)fMinThFAST/255.0f << endl;
-    cout << "- Engine Path: " << mSPEnginePath << endl;
+    cout << "- Model Path: " << mSPEnginePath << endl;
 
     return true;
 }

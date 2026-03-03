@@ -41,21 +41,24 @@ MESSAGE(${OpenCV_VERSION})
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
-find_package(CUDA REQUIRED)
 
-# TensorRT
-set(TENSORRT_ROOT "" CACHE PATH "Path to TensorRT installation")
-if(TENSORRT_ROOT)
-    set(TENSORRT_INCLUDE_DIR ${TENSORRT_ROOT}/include)
-    set(TENSORRT_LIB_DIR ${TENSORRT_ROOT}/lib)
+# ONNX Runtime
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime installation")
+if(ONNXRUNTIME_ROOT)
+    set(ONNXRUNTIME_INCLUDE_DIR ${ONNXRUNTIME_ROOT}/include)
+    set(ONNXRUNTIME_LIB_DIR ${ONNXRUNTIME_ROOT}/lib)
 else()
-    find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include /usr/local/include)
-    find_library(TENSORRT_LIB nvinfer HINTS /usr/lib/x86_64-linux-gnu /usr/local/lib)
-    get_filename_component(TENSORRT_LIB_DIR ${TENSORRT_LIB} DIRECTORY)
+    find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+              HINTS /usr/include /usr/local/include /usr/include/onnxruntime)
+    find_library(ONNXRUNTIME_LIB onnxruntime
+                 HINTS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
+    if(ONNXRUNTIME_LIB)
+        get_filename_component(ONNXRUNTIME_LIB_DIR ${ONNXRUNTIME_LIB} DIRECTORY)
+    endif()
 endif()
 
-message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
-message(STATUS "TensorRT lib dir: ${TENSORRT_LIB_DIR}")
+message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "ONNX Runtime lib dir: ${ONNXRUNTIME_LIB_DIR}")
 
 include_directories(
 ${PROJECT_SOURCE_DIR}
@@ -64,11 +67,12 @@ ${PROJECT_SOURCE_DIR}/include/CameraModels
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
-${CUDA_INCLUDE_DIRS}
-${TENSORRT_INCLUDE_DIR}
+${ONNXRUNTIME_INCLUDE_DIR}
 )
 
-link_directories(${TENSORRT_LIB_DIR})
+if(ONNXRUNTIME_LIB_DIR)
+    link_directories(${ONNXRUNTIME_LIB_DIR})
+endif()
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
@@ -139,8 +143,7 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW3/lib/libDBoW3.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
-nvinfer
-${CUDA_LIBRARIES}
+onnxruntime
 -lboost_serialization
 -lcrypto
 )

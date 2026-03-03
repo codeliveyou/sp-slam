@@ -7,8 +7,8 @@
 #include <fstream>
 #include <algorithm>
 #include <numeric>
-#include <cuda_runtime.h>
-#include <NvInfer.h>
+#include <cmath>
+#include <onnxruntime_cxx_api.h>
 
 #include "SPextractor.h"
 
@@ -74,23 +74,11 @@ void ExtractorNode::DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNo
     if(n4.vKeys.size()==1) n4.bNoMore = true;
 }
 
-class TRTLogger : public nvinfer1::ILogger
-{
-public:
-    void log(Severity severity, const char* msg) noexcept override
-    {
-        if(severity <= Severity::kWARNING)
-            std::cerr << "[TensorRT] " << msg << std::endl;
-    }
-};
-
-static TRTLogger gLogger;
-
 SPextractor::SPextractor(int _nfeatures, float _scaleFactor, int _nlevels,
                          float _iniThFAST, float _minThFAST,
-                         const std::string& enginePath)
+                         const std::string& modelPath)
     : nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
-      iniThFAST(_iniThFAST), minThFAST(_minThFAST), mEnginePath(enginePath)
+      iniThFAST(_iniThFAST), minThFAST(_minThFAST), mModelPath(modelPath)
 {
     mvScaleFactor.resize(nlevels);
     mvLevelSigma2.resize(nlevels);
@@ -125,109 +113,95 @@ SPextractor::SPextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     }
     mnFeaturesPerLevel[nlevels-1] = std::max(nfeatures - sumFeatures, 0);
 
-    cudaStreamCreate(&mCudaStream);
-    loadEngine(mEnginePath);
+    loadModel(mModelPath);
 }
 
-SPextractor::~SPextractor()
+void SPextractor::loadModel(const std::string& modelPath)
 {
-    freeBuffers();
+    try {
+        mEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "SuperPoint");
 
-    if(mCudaStream) {
-        cudaStreamDestroy(mCudaStream);
-        mCudaStream = nullptr;
+        mSessionOptions.SetIntraOpNumThreads(4);
+        mSessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+#ifdef _WIN32
+        std::wstring wpath(modelPath.begin(), modelPath.end());
+        mSession = std::make_unique<Ort::Session>(*mEnv, wpath.c_str(), mSessionOptions);
+#else
+        mSession = std::make_unique<Ort::Session>(*mEnv, modelPath.c_str(), mSessionOptions);
+#endif
+
+        Ort::AllocatorWithDefaultOptions allocator;
+
+        size_t numInputs = mSession->GetInputCount();
+        size_t numOutputs = mSession->GetOutputCount();
+
+        std::cout << "SPextractor: ONNX model has " << numInputs << " inputs and "
+                  << numOutputs << " outputs:" << std::endl;
+
+        mInputNamesStr.clear();
+        mOutputNamesStr.clear();
+
+        for(size_t i = 0; i < numInputs; i++)
+        {
+            auto namePtr = mSession->GetInputNameAllocated(i, allocator);
+            std::string name(namePtr.get());
+            mInputNamesStr.push_back(name);
+
+            auto typeInfo = mSession->GetInputTypeInfo(i);
+            auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+            auto shape = tensorInfo.GetShape();
+
+            std::cout << "  Input[" << i << "] \"" << name << "\" shape=[";
+            for(size_t d = 0; d < shape.size(); d++)
+                std::cout << (d ? "," : "") << shape[d];
+            std::cout << "]" << std::endl;
+
+            if(i == 0 && shape.size() == 4) {
+                mInputH = (shape[2] > 0) ? static_cast<int>(shape[2]) : 0;
+                mInputW = (shape[3] > 0) ? static_cast<int>(shape[3]) : 0;
+                if(mInputH <= 0 || mInputW <= 0)
+                    mDynamicShape = true;
+            }
+        }
+
+        for(size_t i = 0; i < numOutputs; i++)
+        {
+            auto namePtr = mSession->GetOutputNameAllocated(i, allocator);
+            std::string name(namePtr.get());
+            mOutputNamesStr.push_back(name);
+
+            auto typeInfo = mSession->GetOutputTypeInfo(i);
+            auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+            auto shape = tensorInfo.GetShape();
+
+            std::cout << "  Output[" << i << "] \"" << name << "\" shape=[";
+            for(size_t d = 0; d < shape.size(); d++)
+                std::cout << (d ? "," : "") << shape[d];
+            std::cout << "]" << std::endl;
+        }
+
+        mInputNames.clear();
+        for(auto& s : mInputNamesStr)
+            mInputNames.push_back(s.c_str());
+        mOutputNames.clear();
+        for(auto& s : mOutputNamesStr)
+            mOutputNames.push_back(s.c_str());
+
+        std::cout << "SPextractor: ONNX Runtime model loaded (CPU)."
+                  << " Input: " << mInputH << "x" << mInputW
+                  << (mDynamicShape ? " (dynamic)" : " (fixed)")
+                  << std::endl;
     }
-
-    // Destroy in dependency order: context -> engine -> runtime
-    if(mContext) { delete mContext; mContext = nullptr; }
-    if(mEngine)  { delete mEngine;  mEngine  = nullptr; }
-    if(mRuntime) { delete mRuntime; mRuntime = nullptr; }
-}
-
-void SPextractor::loadEngine(const std::string& enginePath)
-{
-    std::ifstream file(enginePath, std::ios::binary);
-    if(!file.good())
-    {
-        std::cerr << "SPextractor: Cannot open TensorRT engine file: " << enginePath << std::endl;
-        return;
+    catch(const Ort::Exception& e) {
+        std::cerr << "SPextractor: Failed to load ONNX model: " << e.what() << std::endl;
     }
-
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    std::vector<char> engineData(size);
-    file.read(engineData.data(), size);
-    file.close();
-
-    mRuntime = nvinfer1::createInferRuntime(gLogger);
-    if(!mRuntime)
-    {
-        std::cerr << "SPextractor: Failed to create TensorRT runtime" << std::endl;
-        return;
-    }
-
-    mEngine = mRuntime->deserializeCudaEngine(engineData.data(), size);
-    if(!mEngine)
-    {
-        std::cerr << "SPextractor: Failed to deserialize TensorRT engine." << std::endl;
-        std::cerr << "  Make sure the engine was built with TensorRT 10.x and matches your GPU." << std::endl;
-        return;
-    }
-
-    mContext = mEngine->createExecutionContext();
-    if(!mContext)
-    {
-        std::cerr << "SPextractor: Failed to create TensorRT execution context" << std::endl;
-        return;
-    }
-
-    const char* inputName = mEngine->getIOTensorName(0);
-    auto inputDims = mEngine->getTensorShape(inputName);
-    if(inputDims.nbDims == 4) {
-        mInputH = static_cast<int>(inputDims.d[2]);
-        mInputW = static_cast<int>(inputDims.d[3]);
-    }
-
-    std::cout << "SPextractor: TensorRT engine loaded (" << mEngine->getNbIOTensors()
-              << " IO tensors). Input: " << mInputH << "x" << mInputW << std::endl;
-}
-
-void SPextractor::allocateBuffers(int H, int W)
-{
-    int Hc = H / 8;
-    int Wc = W / 8;
-
-    size_t inputSize   = 1 * 1 * H * W * sizeof(float);
-    size_t heatmapSize = 1 * 65 * Hc * Wc * sizeof(float);
-    size_t descSize    = 1 * 256 * Hc * Wc * sizeof(float);
-
-    if(inputSize != mBufInputSize || heatmapSize != mBufHeatmapSize || descSize != mBufDescSize)
-    {
-        freeBuffers();
-
-        cudaMalloc(&mDevInput, inputSize);
-        cudaMalloc(&mDevHeatmap, heatmapSize);
-        cudaMalloc(&mDevDesc, descSize);
-
-        mBufInputSize   = inputSize;
-        mBufHeatmapSize = heatmapSize;
-        mBufDescSize    = descSize;
-    }
-}
-
-void SPextractor::freeBuffers()
-{
-    if(mDevInput)   { cudaFree(mDevInput);   mDevInput   = nullptr; }
-    if(mDevHeatmap) { cudaFree(mDevHeatmap); mDevHeatmap = nullptr; }
-    if(mDevDesc)    { cudaFree(mDevDesc);    mDevDesc    = nullptr; }
-    mBufInputSize = mBufHeatmapSize = mBufDescSize = 0;
 }
 
 void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& desc)
 {
-    if(!mContext) {
-        std::cerr << "SPextractor: TensorRT context not initialized" << std::endl;
+    if(!mSession) {
+        std::cerr << "SPextractor: ONNX session not initialized" << std::endl;
         return;
     }
 
@@ -235,11 +209,10 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
     int W = img.cols;
 
     cv::Mat inputImg;
-    if(mInputH > 0 && mInputW > 0 && (H != mInputH || W != mInputW)) {
+    if(!mDynamicShape && mInputH > 0 && mInputW > 0 && (H != mInputH || W != mInputW)) {
         cv::resize(img, inputImg, cv::Size(mInputW, mInputH));
     } else {
         inputImg = img;
-        if(mInputH == 0) { mInputH = H; mInputW = W; }
     }
 
     cv::Mat floatImg;
@@ -250,73 +223,89 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
     int Hc = inH / 8;
     int Wc = inW / 8;
 
-    allocateBuffers(inH, inW);
+    std::vector<int64_t> inputShape = {1, 1, inH, inW};
+    size_t inputTensorSize = 1 * 1 * inH * inW;
 
-    cudaMemcpyAsync(mDevInput, floatImg.ptr<float>(), mBufInputSize,
-                    cudaMemcpyHostToDevice, mCudaStream);
-
-    // Set dynamic input shape (required for TRT 10.x explicit batch)
-    const char* inputName   = mEngine->getIOTensorName(0);
-    const char* heatmapName = mEngine->getIOTensorName(1);
-    const char* descName    = mEngine->getIOTensorName(2);
-
-    nvinfer1::Dims4 inputDims{1, 1, inH, inW};
-    mContext->setInputShape(inputName, inputDims);
-
-    mContext->setTensorAddress(inputName,   mDevInput);
-    mContext->setTensorAddress(heatmapName, mDevHeatmap);
-    mContext->setTensorAddress(descName,    mDevDesc);
-
-    if(!mContext->enqueueV3(mCudaStream))
-    {
-        std::cerr << "SPextractor: enqueueV3 failed" << std::endl;
-        return;
+    std::vector<float> inputTensorValues(inputTensorSize);
+    if(floatImg.isContinuous()) {
+        memcpy(inputTensorValues.data(), floatImg.ptr<float>(), inputTensorSize * sizeof(float));
+    } else {
+        for(int r = 0; r < inH; r++)
+            memcpy(inputTensorValues.data() + r * inW, floatImg.ptr<float>(r), inW * sizeof(float));
     }
 
-    // Heatmap: [1, 65, Hc, Wc] -> softmax -> reshape -> [inH, inW]
-    std::vector<float> heatmapData(65 * Hc * Wc);
-    cudaMemcpyAsync(heatmapData.data(), mDevHeatmap, mBufHeatmapSize,
-                    cudaMemcpyDeviceToHost, mCudaStream);
+    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+        memoryInfo, inputTensorValues.data(), inputTensorSize, inputShape.data(), inputShape.size());
 
-    // Descriptor: [1, 256, Hc, Wc]
-    std::vector<float> descData(256 * Hc * Wc);
-    cudaMemcpyAsync(descData.data(), mDevDesc, mBufDescSize,
-                    cudaMemcpyDeviceToHost, mCudaStream);
+    try {
+        auto outputTensors = mSession->Run(
+            Ort::RunOptions{nullptr},
+            mInputNames.data(), &inputTensor, 1,
+            mOutputNames.data(), mOutputNames.size());
 
-    cudaStreamSynchronize(mCudaStream);
-
-    // Softmax over 65 channels at each cell
-    heatmap = cv::Mat::zeros(inH, inW, CV_32F);
-    for(int y = 0; y < Hc; y++) {
-        for(int x = 0; x < Wc; x++) {
-            float maxVal = -1e10;
-            for(int c = 0; c < 65; c++) {
-                float v = heatmapData[c * Hc * Wc + y * Wc + x];
-                if(v > maxVal) maxVal = v;
-            }
-
-            float sumExp = 0.0f;
-            std::vector<float> expVals(65);
-            for(int c = 0; c < 65; c++) {
-                expVals[c] = exp(heatmapData[c * Hc * Wc + y * Wc + x] - maxVal);
-                sumExp += expVals[c];
-            }
-
-            for(int c = 0; c < 64; c++) {
-                float prob = expVals[c] / sumExp;
-                int dy = c / 8;
-                int dx = c % 8;
-                int py = y * 8 + dy;
-                int px = x * 8 + dx;
-                if(py < inH && px < inW)
-                    heatmap.at<float>(py, px) = prob;
+        // Identify which output is semi (65 channels) and which is desc (256 channels)
+        int semiIdx = -1, descIdx = -1;
+        for(size_t i = 0; i < outputTensors.size(); i++) {
+            auto info = outputTensors[i].GetTensorTypeAndShapeInfo();
+            auto shape = info.GetShape();
+            if(shape.size() >= 2) {
+                if(shape[1] == 65)
+                    semiIdx = static_cast<int>(i);
+                else if(shape[1] == 256)
+                    descIdx = static_cast<int>(i);
             }
         }
-    }
 
-    desc = cv::Mat(256, Hc * Wc, CV_32F);
-    memcpy(desc.ptr<float>(), descData.data(), descData.size() * sizeof(float));
-    desc = desc.reshape(0, {256, Hc, Wc});
+        if(semiIdx < 0 || descIdx < 0) {
+            // Fallback: first output = semi, second = desc
+            if(outputTensors.size() >= 2) {
+                semiIdx = 0;
+                descIdx = 1;
+            } else {
+                std::cerr << "SPextractor: Cannot identify output tensors" << std::endl;
+                return;
+            }
+        }
+
+        const float* semiData = outputTensors[semiIdx].GetTensorData<float>();
+
+        heatmap = cv::Mat::zeros(inH, inW, CV_32F);
+        for(int y = 0; y < Hc; y++) {
+            for(int x = 0; x < Wc; x++) {
+                float maxVal = -1e10f;
+                for(int c = 0; c < 65; c++) {
+                    float v = semiData[c * Hc * Wc + y * Wc + x];
+                    if(v > maxVal) maxVal = v;
+                }
+
+                float sumExp = 0.0f;
+                std::vector<float> expVals(65);
+                for(int c = 0; c < 65; c++) {
+                    expVals[c] = exp(semiData[c * Hc * Wc + y * Wc + x] - maxVal);
+                    sumExp += expVals[c];
+                }
+
+                for(int c = 0; c < 64; c++) {
+                    float prob = expVals[c] / sumExp;
+                    int dy = c / 8;
+                    int dx = c % 8;
+                    int py = y * 8 + dy;
+                    int px = x * 8 + dx;
+                    if(py < inH && px < inW)
+                        heatmap.at<float>(py, px) = prob;
+                }
+            }
+        }
+
+        const float* descData = outputTensors[descIdx].GetTensorData<float>();
+        desc = cv::Mat(256, Hc * Wc, CV_32F);
+        memcpy(desc.ptr<float>(), descData, 256 * Hc * Wc * sizeof(float));
+        desc = desc.reshape(0, {256, Hc, Wc});
+    }
+    catch(const Ort::Exception& e) {
+        std::cerr << "SPextractor: ONNX inference failed: " << e.what() << std::endl;
+    }
 }
 
 void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoints,
@@ -332,7 +321,6 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
     int Hc = H / 8;
     int Wc = W / 8;
 
-    // NMS (3x3) + threshold
     std::vector<cv::KeyPoint> rawKps;
     for(int y = 1; y < H - 1; y++) {
         for(int x = 1; x < W - 1; x++) {
@@ -358,7 +346,6 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
 
     keypoints = rawKps;
 
-    // Interpolate descriptors at keypoint locations
     if(!keypoints.empty() && !descTensor.empty()) {
         descriptors = cv::Mat(keypoints.size(), SP_DESC_DIM, CV_32F);
 

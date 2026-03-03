@@ -21,6 +21,7 @@
 #include "System.h"
 #include "Converter.h"
 #include <thread>
+#include <cmath>
 #include <pangolin/pangolin.h>
 #include <iomanip>
 #include <limits>
@@ -110,67 +111,20 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     bool loadedAtlas = false;
 
-    // Resolve vocabulary path: if a .yml/.yml.gz file is given, check for
-    // a pre-converted DBoW3 binary (.dbow3) next to it which loads orders
-    // of magnitude faster.  If the binary doesn't exist yet, fall back to
-    // the original file (slow YAML parse via cv::FileStorage).
-    string strVocLoadPath = strVocFile;
-    {
-        string ext;
-        if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
-            ext = ".yml.gz";
-        else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
-            ext = ".yml";
-
-        if(!ext.empty())
-        {
-            string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
-            std::ifstream probe(binPath, std::ios::binary);
-            if(probe.good())
-            {
-                cout << "Found binary vocabulary cache: " << binPath << endl;
-                strVocLoadPath = binPath;
-            }
-            else
-            {
-                cout << "NOTE: No binary cache found at " << binPath << endl;
-                cout << "Loading from YAML is very slow for large files." << endl;
-                cout << "After first load the binary cache will be created automatically." << endl;
-            }
-        }
-    }
-
     if(mStrLoadAtlasFromFile.empty())
     {
-        cout << endl << "Loading SuperPoint Vocabulary (DBoW3)..." << endl;
+        //Load SuperPoint Vocabulary (DBoW3)
+        cout << endl << "Loading SuperPoint Vocabulary (DBoW3). This could take a while..." << endl;
 
         mpVocabulary = new ORBVocabulary();
-        mpVocabulary->load(strVocLoadPath);
+        mpVocabulary->load(strVocFile);
         if(mpVocabulary->size() == 0)
         {
             cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Failed to open at: " << strVocLoadPath << endl;
+            cerr << "Failed to open at: " << strVocFile << endl;
             exit(-1);
         }
         cout << "Vocabulary loaded! (" << mpVocabulary->size() << " words)" << endl << endl;
-
-        // Auto-save binary cache so future loads are instant
-        if(strVocLoadPath == strVocFile)
-        {
-            string ext;
-            if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
-                ext = ".yml.gz";
-            else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
-                ext = ".yml";
-
-            if(!ext.empty())
-            {
-                string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
-                cout << "Saving binary vocabulary cache to: " << binPath << endl;
-                mpVocabulary->save(binPath, true);
-                cout << "Binary cache saved. Next startup will be much faster." << endl;
-            }
-        }
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
@@ -181,35 +135,18 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     }
     else
     {
-        cout << endl << "Loading SuperPoint Vocabulary (DBoW3)..." << endl;
+        //Load SuperPoint Vocabulary (DBoW3)
+        cout << endl << "Loading SuperPoint Vocabulary (DBoW3). This could take a while..." << endl;
 
         mpVocabulary = new ORBVocabulary();
-        mpVocabulary->load(strVocLoadPath);
+        mpVocabulary->load(strVocFile);
         if(mpVocabulary->size() == 0)
         {
             cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Failed to open at: " << strVocLoadPath << endl;
+            cerr << "Failed to open at: " << strVocFile << endl;
             exit(-1);
         }
         cout << "Vocabulary loaded! (" << mpVocabulary->size() << " words)" << endl << endl;
-
-        // Auto-save binary cache so future loads are instant
-        if(strVocLoadPath == strVocFile)
-        {
-            string ext;
-            if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
-                ext = ".yml.gz";
-            else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
-                ext = ".yml";
-
-            if(!ext.empty())
-            {
-                string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
-                cout << "Saving binary vocabulary cache to: " << binPath << endl;
-                mpVocabulary->save(binPath, true);
-                cout << "Binary cache saved. Next startup will be much faster." << endl;
-            }
-        }
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
@@ -1567,6 +1504,61 @@ void System::ChangeDataset()
 float System::GetImageScale()
 {
     return mpTracker->GetImageScale();
+}
+
+Sophus::SE3f System::GetCurrentPose()
+{
+    unique_lock<mutex> lock(mMutexState);
+    if(mTrackingState != Tracking::OK)
+        return Sophus::SE3f();
+    return mpTracker->mCurrentFrame.GetPose().inverse();
+}
+
+System::RayQueryResult System::QueryMapAlongDirection(const Eigen::Vector3f& direction,
+                                                       float maxAngleDeg)
+{
+    RayQueryResult result;
+
+    if(mTrackingState != Tracking::OK)
+        return result;
+
+    Eigen::Vector3f d = direction.normalized();
+    if(d.norm() < 1e-6f)
+        return result;
+
+    Eigen::Vector3f Ow = mpTracker->mCurrentFrame.GetOw();
+
+    const float cosThresh = cos(maxAngleDeg * M_PI / 180.0f);
+    float bestAngle = maxAngleDeg;
+
+    vector<MapPoint*> vpMPs = mpAtlas->GetAllMapPoints();
+
+    for(MapPoint* pMP : vpMPs)
+    {
+        if(!pMP || pMP->isBad())
+            continue;
+
+        Eigen::Vector3f v = pMP->GetWorldPos() - Ow;
+        float vNorm = v.norm();
+        if(vNorm < 1e-6f)
+            continue;
+
+        float cosAngle = v.dot(d) / vNorm;
+        if(cosAngle < cosThresh)
+            continue;
+
+        float angleDeg = acos(std::min(cosAngle, 1.0f)) * 180.0f / M_PI;
+        if(angleDeg < bestAngle)
+        {
+            bestAngle = angleDeg;
+            result.found = true;
+            result.point = pMP->GetWorldPos();
+            result.distance = v.dot(d);
+            result.angularError = angleDeg;
+        }
+    }
+
+    return result;
 }
 
 #ifdef REGISTER_TIMES

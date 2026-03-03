@@ -4,9 +4,9 @@
 #include <vector>
 #include <list>
 #include <string>
+#include <memory>
 #include <opencv2/opencv.hpp>
-#include <NvInfer.h>
-#include <cuda_runtime.h>
+#include <onnxruntime_cxx_api.h>
 
 namespace ORB_SLAM3
 {
@@ -29,9 +29,9 @@ class SPextractor
 public:
     SPextractor(int nfeatures, float scaleFactor, int nlevels,
                 float iniThFAST, float minThFAST,
-                const std::string& enginePath = "superpoint.engine");
+                const std::string& modelPath = "superpoint.onnx");
 
-    ~SPextractor();
+    ~SPextractor(){}
 
     int operator()(cv::InputArray image, cv::InputArray mask,
                    std::vector<cv::KeyPoint>& keypoints,
@@ -73,31 +73,26 @@ protected:
     std::vector<float> mvLevelSigma2;
     std::vector<float> mvInvLevelSigma2;
 
-    std::string mEnginePath;
-
-    // TRT objects: declared in dependency order so destruction is safe
-    // (class members are destroyed in reverse declaration order)
-    nvinfer1::IRuntime* mRuntime = nullptr;
-    nvinfer1::ICudaEngine* mEngine = nullptr;
-    nvinfer1::IExecutionContext* mContext = nullptr;
-
-    cudaStream_t mCudaStream = nullptr;
+    std::string mModelPath;
+    std::unique_ptr<Ort::Env> mEnv;
+    std::unique_ptr<Ort::Session> mSession;
+    Ort::SessionOptions mSessionOptions;
 
     int mInputH = 0;
     int mInputW = 0;
+    bool mDynamicShape = false;
 
-    // Pre-allocated GPU buffers (reused across frames)
-    void* mDevInput = nullptr;
-    void* mDevHeatmap = nullptr;
-    void* mDevDesc = nullptr;
-    size_t mBufInputSize = 0;
-    size_t mBufHeatmapSize = 0;
-    size_t mBufDescSize = 0;
+    std::string mInputName;
+    std::string mSemiName;
+    std::string mDescName;
 
-    void loadEngine(const std::string& enginePath);
+    std::vector<const char*> mInputNames;
+    std::vector<const char*> mOutputNames;
+    std::vector<std::string> mInputNamesStr;
+    std::vector<std::string> mOutputNamesStr;
+
+    void loadModel(const std::string& modelPath);
     void runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& desc);
-    void allocateBuffers(int H, int W);
-    void freeBuffers();
 };
 
 } // namespace ORB_SLAM3

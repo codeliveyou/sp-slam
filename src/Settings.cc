@@ -448,6 +448,18 @@ namespace ORB_SLAM3 {
         nLevels_ = readParameter<int>(fSettings,"ORBextractor.nLevels",found);
         initThFAST_ = readParameter<int>(fSettings,"ORBextractor.iniThFAST",found);
         minThFAST_ = readParameter<int>(fSettings,"ORBextractor.minThFAST",found);
+
+        descriptorType_ = "ORB";
+        readParameter<string>(fSettings,"ORBextractor.descriptor",found,false);
+        if(found){
+            descriptorType_ = readParameter<string>(fSettings,"ORBextractor.descriptor",found,false);
+        }
+
+        descriptorScaleFactor_ = 1.0f;
+        readParameter<float>(fSettings,"ORBextractor.descriptorScaleFactor",found,false);
+        if(found){
+            descriptorScaleFactor_ = readParameter<float>(fSettings,"ORBextractor.descriptorScaleFactor",found,false);
+        }
     }
 
     void Settings::readViewer(cv::FileStorage &fSettings) {
@@ -632,6 +644,8 @@ namespace ORB_SLAM3 {
         output << "\t-ORB number of scales: " << settings.nLevels_ << endl;
         output << "\t-Initial FAST threshold: " << settings.initThFAST_ << endl;
         output << "\t-Min FAST threshold: " << settings.minThFAST_ << endl;
+        output << "\t-Descriptor type: " << settings.descriptorType_ << endl;
+        output << "\t-Descriptor scale factor: " << settings.descriptorScaleFactor_ << endl;
 
         return output;
     }

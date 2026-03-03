@@ -99,6 +99,8 @@ namespace ORB_SLAM3 {
         float initThFAST() {return initThFAST_;}
         float minThFAST() {return minThFAST_;}
         float scaleFactor() {return scaleFactor_;}
+        std::string descriptorType() {return descriptorType_;}
+        float descriptorScaleFactor() {return descriptorScaleFactor_;}
 
         float keyFrameSize() {return keyFrameSize_;}
         float keyFrameLineWidth() {return keyFrameLineWidth_;}
@@ -205,6 +207,8 @@ namespace ORB_SLAM3 {
         float scaleFactor_;
         int nLevels_;
         int initThFAST_, minThFAST_;
+        std::string descriptorType_;
+        float descriptorScaleFactor_;
 
         /*
          * Viewer stuff

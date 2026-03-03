@@ -185,6 +185,25 @@ public:
 
     float GetImageScale();
 
+    // --- Scale estimation via map ray-casting ---
+
+    struct RayQueryResult {
+        bool found = false;
+        Eigen::Vector3f point = Eigen::Vector3f::Zero();
+        float distance = 0.f;
+        float angularError = 0.f;
+    };
+
+    // Find the closest map point along a ray from the current camera center.
+    // direction: ray direction in SLAM world coordinates (does not need to be unit length).
+    // maxAngleDeg: search cone half-angle in degrees.
+    RayQueryResult QueryMapAlongDirection(const Eigen::Vector3f& direction,
+                                          float maxAngleDeg = 10.0f);
+
+    // Current camera-to-world pose (Twc) in SLAM coordinates.
+    // Returns identity if tracking is not yet initialized.
+    Sophus::SE3f GetCurrentPose();
+
 #ifdef REGISTER_TIMES
     void InsertRectTime(double& time);
     void InsertResizeTime(double& time);
