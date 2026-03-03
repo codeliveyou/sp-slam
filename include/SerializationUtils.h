@@ -21,6 +21,7 @@
 
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/vector.hpp>
+#include <boost/serialization/map.hpp>
 
 #include <sophus/se3.hpp>
 #include <Eigen/Core>
@@ -29,6 +30,26 @@
 #include <opencv2/features2d/features2d.hpp>
 
 #include <vector>
+
+#include "Thirdparty/DBoW3/src/DBoW3.h"
+
+namespace boost {
+namespace serialization {
+
+template<class Archive>
+void serialize(Archive &ar, DBoW3::BowVector &bv, const unsigned int version)
+{
+    ar & boost::serialization::base_object<std::map<DBoW3::WordId, DBoW3::WordValue>>(bv);
+}
+
+template<class Archive>
+void serialize(Archive &ar, DBoW3::FeatureVector &fv, const unsigned int version)
+{
+    ar & boost::serialization::base_object<std::map<DBoW3::NodeId, std::vector<unsigned int>>>(fv);
+}
+
+} // namespace serialization
+} // namespace boost
 
 namespace ORB_SLAM3
 {
