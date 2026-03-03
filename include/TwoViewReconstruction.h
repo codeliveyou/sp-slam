@@ -24,7 +24,7 @@
 #include <unordered_set>
 
 #include <sophus/se3.hpp>
-
+using namespace std;
 namespace ORB_SLAM3
 {
 

@@ -28,7 +28,7 @@
 
 #include "Thirdparty/Sophus/sophus/geometry.hpp"
 #include "Thirdparty/Sophus/sophus/sim3.hpp"
-
+using namespace std;
 namespace ORB_SLAM3
 {
 

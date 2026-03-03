@@ -33,7 +33,7 @@
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/map.hpp>
-
+using namespace std;
 namespace ORB_SLAM3
 {
 

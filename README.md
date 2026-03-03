@@ -6,7 +6,7 @@ A visual SLAM system based on [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM
 
 | Component | ORB-SLAM3 | This Project |
 |---|---|---|
-| Feature extractor | ORB (handcrafted) | SuperPoint (deep learned, ONNX Runtime CPU) |
+| Feature extractor | ORB (handcrafted) | SuperPoint (deep learned, TensorRT) |
 | Descriptor type | 256-bit binary | 256-dim float |
 | Distance metric | Hamming | L2 |
 | Vocabulary | DBoW2 (binary) | DBoW3 (float) |
@@ -23,7 +23,9 @@ The SLAM pipeline (tracking, local mapping, loop closing, IMU integration, multi
 - **Eigen3** (>= 3.1.0)
 - **Pangolin** -- visualization ([GitHub](https://github.com/stevenlovegrove/Pangolin))
 - **Boost** -- serialization (`libboost-serialization-dev`)
-- **ONNX Runtime** -- SuperPoint inference (CPU, no GPU required). Install via system package or download from [GitHub releases](https://github.com/microsoft/onnxruntime/releases)
+- **CUDA** -- TensorRT runtime dependency
+- **TensorRT** -- SuperPoint inference engine
+- **SuperPoint TensorRT engine file** -- `.engine` file converted from the SuperPoint model (see below)
 
 ### Optional
 
@@ -38,17 +40,15 @@ The SLAM pipeline (tracking, local mapping, loop closing, IMU integration, multi
 
 ## Building
 
-### 1. Prepare the SuperPoint ONNX model
+### 1. Prepare the SuperPoint TensorRT engine
 
-You need a SuperPoint ONNX model file (`.onnx`). The expected I/O:
+Convert your SuperPoint model (PyTorch/ONNX) to a TensorRT `.engine` file. The expected I/O:
 
 - **Input**: `[1, 1, H, W]` grayscale float image (0-1 normalized)
 - **Output 0** (semi): `[1, 65, H/8, W/8]` keypoint heatmap
 - **Output 1** (desc): `[1, 256, H/8, W/8]` descriptor map
 
-Place the model file as `superpoint.onnx` in your working directory, or specify the path in your settings YAML via `SuperPoint.modelPath`.
-
-No GPU or TensorRT is required -- the model runs on CPU via ONNX Runtime.
+Place the engine file as `superpoint.engine` in your working directory, or specify the path in your settings YAML.
 
 ### 2. Build third-party libraries and the main project
 
@@ -59,11 +59,11 @@ chmod +x build.sh
 
 This builds DBoW3, g2o, Sophus, and the main library + executables.
 
-If ONNX Runtime is not in a standard system path, pass its location:
+If TensorRT is not in a standard system path, pass its location:
 
 ```bash
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DONNXRUNTIME_ROOT=/path/to/onnxruntime
+cmake .. -DCMAKE_BUILD_TYPE=Release -DTENSORRT_ROOT=/path/to/TensorRT
 make -j4
 ```
 
@@ -106,7 +106,7 @@ The integer threshold values are converted to float probabilities internally: `t
 
 ```
 ├── include/
-│   ├── SPextractor.h        # SuperPoint feature extractor (ONNX Runtime CPU)
+│   ├── SPextractor.h        # SuperPoint feature extractor (TensorRT)
 │   ├── ORBmatcher.h         # Descriptor matching (L2 distance)
 │   ├── ORBVocabulary.h      # typedef to DBoW3::Vocabulary
 │   ├── Frame.h              # DBoW3 BowVector/FeatureVector
@@ -115,7 +115,7 @@ The integer threshold values are converted to float probabilities internally: `t
 │   ├── DUtils.h             # Standalone random utilities (replaces DBoW2/DUtils)
 │   └── ...
 ├── src/
-│   ├── SPextractor.cc       # ONNX Runtime inference + pyramid + octree distribution
+│   ├── SPextractor.cc       # TensorRT inference + pyramid + octree distribution
 │   ├── ORBmatcher.cc        # L2 distance, float thresholds
 │   └── ...
 ├── Thirdparty/

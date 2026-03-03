@@ -23,7 +23,7 @@
 #include <list>
 #include <string>
 #include <opencv2/opencv.hpp>
-
+using namespace std;
 
 namespace ORB_SLAM3
 {

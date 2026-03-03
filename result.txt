@@ -1,0 +1,100 @@
+  Heatmap 512x512 min=0.011733946390450001 max=0.019857404753565788
+Keypoints: 28849
+  detect result: 28849 keypoints, desc 28849x256
+  Heatmap 512x512 min=0.011764085851609707 max=0.019566014409065247
+Keypoints: 28806
+  detect result: 28806 keypoints, desc 28806x256
+  Heatmap 512x512 min=0.011663016863167286 max=0.019804049283266068
+Keypoints: 29046
+  detect result: 29046 keypoints, desc 29046x256
+  Heatmap 512x512 min=0.011724046431481838 max=0.022737007588148117
+Keypoints: 28532
+  detect result: 28532 keypoints, desc 28532x256
+  Heatmap 512x512 min=0.011804642155766487 max=0.019787432625889778
+Keypoints: 28545
+  detect result: 28545 keypoints, desc 28545x256
+  Heatmap 512x512 min=0.011829681694507599 max=0.019504623487591743
+Keypoints: 28901
+  detect result: 28901 keypoints, desc 28901x256
+  Heatmap 512x512 min=0.011363804340362549 max=0.019343486055731773
+Keypoints: 28979
+  detect result: 28979 keypoints, desc 28979x256
+  Heatmap 512x512 min=0.011713495478034019 max=0.019835652783513069
+Keypoints: 28769
+  detect result: 28769 keypoints, desc 28769x256
+Image path: /home/apong/Documents/MH_01_easy/mav0/cam0/data/1403636582113555456.png
+  Heatmap 512x512 min=0 max=1
+Keypoints: 28242
+  detect result: 28242 keypoints, desc 28242x256
+  Heatmap 512x512 min=0.011887996457517147 max=0.019341759383678436
+Keypoints: 28897
+  detect result: 28897 keypoints, desc 28897x256
+  Heatmap 512x512 min=0.011888903565704823 max=0.019496958702802658
+Keypoints: 29023
+  detect result: 29023 keypoints, desc 29023x256
+  Heatmap 512x512 min=0.01156009454280138 max=0.02270408533513546
+Keypoints: 28569
+  detect result: 28569 keypoints, desc 28569x256
+  Heatmap 512x512 min=0.011880550533533096 max=0.01977868564426899
+Keypoints: 28680
+  detect result: 28680 keypoints, desc 28680x256
+  Heatmap 512x512 min=0.011855967342853546 max=0.019771965220570564
+Keypoints: 28836
+  detect result: 28836 keypoints, desc 28836x256
+  Heatmap 512x512 min=0 max=1
+Keypoints: 28076
+  detect result: 28076 keypoints, desc 28076x256
+  Heatmap 512x512 min=0.011672632768750191 max=0.019897053018212318
+Keypoints: 28831
+  detect result: 28831 keypoints, desc 28831x256
+Image path: /home/apong/Documents/MH_01_easy/mav0/cam0/data/1403636582163555584.png
+  Heatmap 512x512 min=0.011846465058624744 max=0.019656302407383919
+Keypoints: 29098
+  detect result: 29098 keypoints, desc 29098x256
+  Heatmap 512x512 min=0.011713916435837746 max=0.020278973504900932
+Keypoints: 28752
+  detect result: 28752 keypoints, desc 28752x256
+  Heatmap 512x512 min=0.01177448034286499 max=0.020266460254788399
+Keypoints: 28535
+  detect result: 28535 keypoints, desc 28535x256
+  Heatmap 512x512 min=0.010411053895950317 max=0.037993509322404861
+Keypoints: 14459
+  detect result: 14459 keypoints, desc 14459x256
+  Heatmap 512x512 min=0.010482854209840298 max=0.038560241460800171
+Keypoints: 15184
+  detect result: 15184 keypoints, desc 15184x256
+  Heatmap 512x512 min=0.011725366115570068 max=0.020502626895904541
+Keypoints: 28488
+  detect result: 28488 keypoints, desc 28488x256
+  Heatmap 512x512 min=0.012032209895551205 max=0.019947757944464684
+Keypoints: 28846
+  detect result: 28846 keypoints, desc 28846x256
+  Heatmap 512x512 min=0.011553819291293621 max=0.019853126257658005
+Keypoints: 28814
+  detect result: 28814 keypoints, desc 28814x256
+Image path: /home/apong/Documents/MH_01_easy/mav0/cam0/data/1403636582213555456.png
+  Heatmap 512x512 min=0.011866596527397633 max=0.019503859803080559
+Keypoints: 28952
+  detect result: 28952 keypoints, desc 28952x256
+  Heatmap 512x512 min=0.0099707990884780884 max=0.03756902739405632
+Keypoints: 13303
+  detect result: 13303 keypoints, desc 13303x256
+  Heatmap 512x512 min=0.0096353339031338692 max=0.03558739647269249
+Keypoints: 11361
+  detect result: 11361 keypoints, desc 11361x256
+  Heatmap 512x512 min=0.0079894866794347763 max=0.030211105942726135
+Keypoints: 11315
+  detect result: 11315 keypoints, desc 11315x256
+  Heatmap 512x512 min=0.0084562748670578003 max=0.032641157507896423
+Keypoints: 10641
+  detect result: 10641 keypoints, desc 10641x256
+  Heatmap 512x512 min=0.010809687897562981 max=0.040022470057010651
+Keypoints: 25649
+  detect result: 25649 keypoints, desc 25649x256
+  Heatmap 512x512 min=0.011803889647126198 max=0.020241530612111092
+Keypoints: 29006
+  detect result: 29006 keypoints, desc 29006x256
+  Heatmap 512x512 min=0.011771034449338913 max=0.019702017307281494
+Keypoints: 28808
+  detect result: 28808 keypoints, desc 28808x256
+Image path: /home/apong/Documents/MH_01_easy/mav0/cam0/data/1403636582263555584.png

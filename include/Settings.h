@@ -29,7 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
-
+using namespace std;
 namespace ORB_SLAM3 {
 
     class System;

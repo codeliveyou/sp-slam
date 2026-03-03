@@ -7,6 +7,10 @@
 #include <memory>
 #include <opencv2/opencv.hpp>
 #include <onnxruntime_cxx_api.h>
+using namespace std;
+#ifdef USE_CUDA
+#include <onnxruntime_c_api.h>
+#endif
 
 namespace ORB_SLAM3
 {
@@ -81,6 +85,8 @@ protected:
     int mInputH = 0;
     int mInputW = 0;
     bool mDynamicShape = false;
+    bool mUseCUDA = false;
+    int mDeviceId = 0;
 
     std::string mInputName;
     std::string mSemiName;

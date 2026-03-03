@@ -3,7 +3,7 @@
 
 #include <cstdlib>
 #include <vector>
-
+using namespace std;
 namespace DUtils {
 
 class Random

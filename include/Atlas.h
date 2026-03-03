@@ -30,7 +30,7 @@
 #include <mutex>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/export.hpp>
-
+using namespace std;
 
 namespace ORB_SLAM3
 {

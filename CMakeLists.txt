@@ -11,6 +11,9 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wall   -O3")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall   -O3")
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -march=native")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
+set(ONNXRUNTIME_ROOT /home/apong/Documents/onnxruntime-linux-x64-1.22.0)
+set(ONNXRUNTIME_INCLUDE_DIRS ${ONNXRUNTIME_ROOT}/include)
+set(ONNXRUNTIME_LIB_DIR ${ONNXRUNTIME_ROOT}/lib)
 
 # Check C++11 or C++0x support
 include(CheckCXXCompilerFlag)
@@ -41,24 +44,21 @@ MESSAGE(${OpenCV_VERSION})
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
+# find_package(CUDA REQUIRED)
 
-# ONNX Runtime
-set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to ONNX Runtime installation")
-if(ONNXRUNTIME_ROOT)
-    set(ONNXRUNTIME_INCLUDE_DIR ${ONNXRUNTIME_ROOT}/include)
-    set(ONNXRUNTIME_LIB_DIR ${ONNXRUNTIME_ROOT}/lib)
-else()
-    find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
-              HINTS /usr/include /usr/local/include /usr/include/onnxruntime)
-    find_library(ONNXRUNTIME_LIB onnxruntime
-                 HINTS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
-    if(ONNXRUNTIME_LIB)
-        get_filename_component(ONNXRUNTIME_LIB_DIR ${ONNXRUNTIME_LIB} DIRECTORY)
-    endif()
-endif()
+# TensorRT
+# set(TENSORRT_ROOT "" CACHE PATH "Path to TensorRT installation")
+# if(TENSORRT_ROOT)
+#     set(TENSORRT_INCLUDE_DIR ${TENSORRT_ROOT}/include)
+#     set(TENSORRT_LIB_DIR ${TENSORRT_ROOT}/lib)
+# else()
+#     find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include /usr/local/include)
+#     find_library(TENSORRT_LIB nvinfer HINTS /usr/lib/x86_64-linux-gnu /usr/local/lib)
+#     get_filename_component(TENSORRT_LIB_DIR ${TENSORRT_LIB} DIRECTORY)
+# endif()
 
-message(STATUS "ONNX Runtime include: ${ONNXRUNTIME_INCLUDE_DIR}")
-message(STATUS "ONNX Runtime lib dir: ${ONNXRUNTIME_LIB_DIR}")
+# message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
+# message(STATUS "TensorRT lib dir: ${TENSORRT_LIB_DIR}")
 
 include_directories(
 ${PROJECT_SOURCE_DIR}
@@ -67,12 +67,12 @@ ${PROJECT_SOURCE_DIR}/include/CameraModels
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
-${ONNXRUNTIME_INCLUDE_DIR}
+# ${CUDA_INCLUDE_DIRS}
+# ${TENSORRT_INCLUDE_DIR}
+${ONNXRUNTIME_INCLUDE_DIRS}
 )
 
-if(ONNXRUNTIME_LIB_DIR)
-    link_directories(${ONNXRUNTIME_LIB_DIR})
-endif()
+# link_directories(${TENSORRT_LIB_DIR})
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
@@ -143,7 +143,9 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW3/lib/libDBoW3.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
-onnxruntime
+# nvinfer
+# ${CUDA_LIBRARIES}
+${ONNXRUNTIME_LIB_DIR}/libonnxruntime.so
 -lboost_serialization
 -lcrypto
 )
@@ -212,52 +214,52 @@ endif()
 #Monocular examples
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Monocular)
 
-add_executable(mono_tum
-        Examples/Monocular/mono_tum.cc)
-target_link_libraries(mono_tum ${PROJECT_NAME})
+# add_executable(mono_tum
+#         Examples/Monocular/mono_tum.cc)
+# target_link_libraries(mono_tum ${PROJECT_NAME})
 
-add_executable(mono_kitti
-        Examples/Monocular/mono_kitti.cc)
-target_link_libraries(mono_kitti ${PROJECT_NAME})
+# add_executable(mono_kitti
+#         Examples/Monocular/mono_kitti.cc)
+# target_link_libraries(mono_kitti ${PROJECT_NAME})
 
 add_executable(mono_euroc
         Examples/Monocular/mono_euroc.cc)
 target_link_libraries(mono_euroc ${PROJECT_NAME})
 
-add_executable(mono_tum_vi
-        Examples/Monocular/mono_tum_vi.cc)
-target_link_libraries(mono_tum_vi ${PROJECT_NAME})
+# add_executable(mono_tum_vi
+#         Examples/Monocular/mono_tum_vi.cc)
+# target_link_libraries(mono_tum_vi ${PROJECT_NAME})
 
-if(realsense2_FOUND)
-    add_executable(mono_realsense_t265
-            Examples/Monocular/mono_realsense_t265.cc)
-    target_link_libraries(mono_realsense_t265 ${PROJECT_NAME})
+# if(realsense2_FOUND)
+#     add_executable(mono_realsense_t265
+#             Examples/Monocular/mono_realsense_t265.cc)
+#     target_link_libraries(mono_realsense_t265 ${PROJECT_NAME})
 
-    add_executable(mono_realsense_D435i
-            Examples/Monocular/mono_realsense_D435i.cc)
-    target_link_libraries(mono_realsense_D435i ${PROJECT_NAME})
-endif()
+#     add_executable(mono_realsense_D435i
+#             Examples/Monocular/mono_realsense_D435i.cc)
+#     target_link_libraries(mono_realsense_D435i ${PROJECT_NAME})
+# endif()
 
-#Monocular inertial examples
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Monocular-Inertial)
+# #Monocular inertial examples
+# set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Monocular-Inertial)
 
-add_executable(mono_inertial_euroc
-        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
-target_link_libraries(mono_inertial_euroc ${PROJECT_NAME})
+# add_executable(mono_inertial_euroc
+#         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+# target_link_libraries(mono_inertial_euroc ${PROJECT_NAME})
 
-add_executable(mono_inertial_tum_vi
-        Examples/Monocular-Inertial/mono_inertial_tum_vi.cc)
-target_link_libraries(mono_inertial_tum_vi ${PROJECT_NAME})
+# add_executable(mono_inertial_tum_vi
+#         Examples/Monocular-Inertial/mono_inertial_tum_vi.cc)
+# target_link_libraries(mono_inertial_tum_vi ${PROJECT_NAME})
 
-if(realsense2_FOUND)
-    add_executable(mono_inertial_realsense_t265
-            Examples/Monocular-Inertial/mono_inertial_realsense_t265.cc)
-    target_link_libraries(mono_inertial_realsense_t265 ${PROJECT_NAME})
+# if(realsense2_FOUND)
+#     add_executable(mono_inertial_realsense_t265
+#             Examples/Monocular-Inertial/mono_inertial_realsense_t265.cc)
+#     target_link_libraries(mono_inertial_realsense_t265 ${PROJECT_NAME})
 
-    add_executable(mono_inertial_realsense_D435i
-            Examples/Monocular-Inertial/mono_inertial_realsense_D435i.cc)
-    target_link_libraries(mono_inertial_realsense_D435i ${PROJECT_NAME})
-endif()
+#     add_executable(mono_inertial_realsense_D435i
+#             Examples/Monocular-Inertial/mono_inertial_realsense_D435i.cc)
+#     target_link_libraries(mono_inertial_realsense_D435i ${PROJECT_NAME})
+# endif()
 
 # #Stereo Inertial examples
 # set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Stereo-Inertial)

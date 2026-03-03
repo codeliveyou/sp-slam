@@ -28,7 +28,7 @@
 #include "Settings.h"
 
 #include <mutex>
-
+using namespace std;
 
 namespace ORB_SLAM3
 {

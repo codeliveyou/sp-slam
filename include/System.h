@@ -39,7 +39,7 @@
 #include "Viewer.h"
 #include "ImuTypes.h"
 #include "Settings.h"
-
+using namespace std;
 
 namespace ORB_SLAM3
 {

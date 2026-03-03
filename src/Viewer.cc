@@ -343,7 +343,8 @@ void Viewer::Run()
             int height = toShow.rows * mImageViewerScale;
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
-
+        
+        /*
         // On-screen position and velocity (SLAM coords). Smoothed to reduce flicker; always show when pose valid.
         static Eigen::Vector3f s_vSlam(0, 0, 0), s_vImu(0, 0, 0);
         static bool s_velSlamInitialized = false, s_velImuInitialized = false;
@@ -499,6 +500,7 @@ void Viewer::Run()
             if (nPrinted > 0)
                 std::cout << "[SLAM] (showing " << nPrinted << " points; total in frame: " << F.N << ")" << std::endl;
         }
+        */
 
         cv::imshow("ORB-SLAM3: Current Frame",toShow);
         cv::waitKey(mT);

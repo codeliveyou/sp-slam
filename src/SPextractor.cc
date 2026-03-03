@@ -23,6 +23,11 @@ const int HALF_PATCH_SIZE = 15;
 const int EDGE_THRESHOLD = 19;
 const int SP_DESC_DIM = 256;
 
+const float SP_THRESHOLD_HIGH = 0.015f;
+const float SP_THRESHOLD_LOW  = 0.005f;
+const float SP_DESC_SCALE     = 512.0f;
+
+
 void ExtractorNode::DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4)
 {
     const int halfX = ceil(static_cast<float>(UR.x-UL.x)/2);
@@ -124,6 +129,28 @@ void SPextractor::loadModel(const std::string& modelPath)
         mSessionOptions.SetIntraOpNumThreads(4);
         mSessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+#ifdef USE_CUDA
+        try {
+            OrtCUDAProviderOptions cuda_options{};
+            cuda_options.device_id = mDeviceId;
+            cuda_options.arena_extend_strategy = 0;
+            cuda_options.cudnn_conv_algo_search = OrtCudnnDefaultConvAlgoSearch;
+            cuda_options.gpu_mem_limit = SIZE_MAX;
+            cuda_options.do_copy_in_default_stream = 1;
+            mSessionOptions.AppendExecutionProvider_CUDA(cuda_options);
+            mUseCUDA = true;
+            std::cout << "SPextractor: CUDA execution provider appended (device "
+                      << mDeviceId << ")" << std::endl;
+        }
+        catch(const Ort::Exception& e) {
+            std::cerr << "SPextractor: CUDA provider failed, falling back to CPU: "
+                      << e.what() << std::endl;
+            mUseCUDA = false;
+        }
+#else
+        mUseCUDA = false;
+#endif
+
 #ifdef _WIN32
         std::wstring wpath(modelPath.begin(), modelPath.end());
         mSession = std::make_unique<Ort::Session>(*mEnv, wpath.c_str(), mSessionOptions);
@@ -188,7 +215,8 @@ void SPextractor::loadModel(const std::string& modelPath)
         for(auto& s : mOutputNamesStr)
             mOutputNames.push_back(s.c_str());
 
-        std::cout << "SPextractor: ONNX Runtime model loaded (CPU)."
+        std::cout << "SPextractor: ONNX Runtime model loaded ("
+                  << (mUseCUDA ? "CUDA" : "CPU") << ")."
                   << " Input: " << mInputH << "x" << mInputW
                   << (mDynamicShape ? " (dynamic)" : " (fixed)")
                   << std::endl;
@@ -204,10 +232,10 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
         std::cerr << "SPextractor: ONNX session not initialized" << std::endl;
         return;
     }
-
+    // std::cout << "SPextractor.cc [Line 230]" << std::endl;
     int H = img.rows;
     int W = img.cols;
-
+    // std::cout << "SPextractor.cc [Line 233]" << std::endl;
     cv::Mat inputImg;
     if(!mDynamicShape && mInputH > 0 && mInputW > 0 && (H != mInputH || W != mInputW)) {
         cv::resize(img, inputImg, cv::Size(mInputW, mInputH));
@@ -233,17 +261,17 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
         for(int r = 0; r < inH; r++)
             memcpy(inputTensorValues.data() + r * inW, floatImg.ptr<float>(r), inW * sizeof(float));
     }
-
+    // std::cout << "SPextractor.cc [Line 259]" << std::endl;
     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
         memoryInfo, inputTensorValues.data(), inputTensorSize, inputShape.data(), inputShape.size());
-
+    // std::cout << "SPextractor.cc [Line 263]" << std::endl;
     try {
         auto outputTensors = mSession->Run(
             Ort::RunOptions{nullptr},
             mInputNames.data(), &inputTensor, 1,
             mOutputNames.data(), mOutputNames.size());
-
+        // std::cout << "SPextractor.cc [Line 269]" << std::endl;
         // Identify which output is semi (65 channels) and which is desc (256 channels)
         int semiIdx = -1, descIdx = -1;
         for(size_t i = 0; i < outputTensors.size(); i++) {
@@ -256,7 +284,7 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
                     descIdx = static_cast<int>(i);
             }
         }
-
+        // std::cout << "SPextractor.cc [Line 282]" << std::endl;
         if(semiIdx < 0 || descIdx < 0) {
             // Fallback: first output = semi, second = desc
             if(outputTensors.size() >= 2) {
@@ -270,41 +298,81 @@ void SPextractor::runInference(const cv::Mat& img, cv::Mat& heatmap, cv::Mat& de
 
         const float* semiData = outputTensors[semiIdx].GetTensorData<float>();
 
+        bool needSoftmax = false;
+        {
+            float channelSum = 0.0f;
+            bool hasNegative = false;
+            for(int c = 0; c < 65; c++) {
+                float v = semiData[c * Hc * Wc];
+                channelSum += v;
+                if(v < 0.0f) hasNegative = true;
+            }
+            needSoftmax = hasNegative || (channelSum < 0.5f) || (channelSum > 1.5f);
+#ifdef SP_DEBUG_VIS
+            std::cout << "  semi channel sum at (0,0)=" << channelSum
+                      << " hasNeg=" << hasNegative
+                      << " -> " << (needSoftmax ? "apply softmax" : "already softmaxed, reshape only")
+                      << std::endl;
+#endif
+        }
+
         heatmap = cv::Mat::zeros(inH, inW, CV_32F);
         for(int y = 0; y < Hc; y++) {
             for(int x = 0; x < Wc; x++) {
-                float maxVal = -1e10f;
-                for(int c = 0; c < 65; c++) {
-                    float v = semiData[c * Hc * Wc + y * Wc + x];
-                    if(v > maxVal) maxVal = v;
-                }
+                std::vector<float> probs(64);
 
-                float sumExp = 0.0f;
-                std::vector<float> expVals(65);
-                for(int c = 0; c < 65; c++) {
-                    expVals[c] = exp(semiData[c * Hc * Wc + y * Wc + x] - maxVal);
-                    sumExp += expVals[c];
+                if(needSoftmax) {
+                    float maxVal = -1e10f;
+                    for(int c = 0; c < 65; c++) {
+                        float v = semiData[c * Hc * Wc + y * Wc + x];
+                        if(v > maxVal) maxVal = v;
+                    }
+                    float sumExp = 0.0f;
+                    std::vector<float> expVals(65);
+                    for(int c = 0; c < 65; c++) {
+                        expVals[c] = exp(semiData[c * Hc * Wc + y * Wc + x] - maxVal);
+                        sumExp += expVals[c];
+                    }
+                    for(int c = 0; c < 64; c++)
+                        probs[c] = expVals[c] / sumExp;
+                } else {
+                    for(int c = 0; c < 64; c++)
+                        probs[c] = semiData[c * Hc * Wc + y * Wc + x];
                 }
 
                 for(int c = 0; c < 64; c++) {
-                    float prob = expVals[c] / sumExp;
                     int dy = c / 8;
                     int dx = c % 8;
                     int py = y * 8 + dy;
                     int px = x * 8 + dx;
                     if(py < inH && px < inW)
-                        heatmap.at<float>(py, px) = prob;
+                        heatmap.at<float>(py, px) = probs[c];
                 }
             }
         }
+        {
+            double hMin, hMax;
+            cv::minMaxLoc(heatmap, &hMin, &hMax);
+            std::cout << "  Heatmap " << heatmap.cols << "x" << heatmap.rows
+                      << " min=" << hMin << " max=" << hMax << std::endl;
 
+            cv::Mat heatVis;
+            if(hMax > hMin)
+                heatmap.convertTo(heatVis, CV_8U, 255.0 / hMax);
+            else
+                heatmap.convertTo(heatVis, CV_8U, 255.0);
+            cv::applyColorMap(heatVis, heatVis, cv::COLORMAP_JET);
+            cv::imshow("SP heatmap", heatVis);
+        }
+        // std::cout << "SPextractor.cc [Line 323]" << std::endl;
         const float* descData = outputTensors[descIdx].GetTensorData<float>();
         desc = cv::Mat(256, Hc * Wc, CV_32F);
         memcpy(desc.ptr<float>(), descData, 256 * Hc * Wc * sizeof(float));
         desc = desc.reshape(0, {256, Hc, Wc});
     }
     catch(const Ort::Exception& e) {
-        std::cerr << "SPextractor: ONNX inference failed: " << e.what() << std::endl;
+        std::cerr << "SPextractor: ONNX inference failed ("
+                  << (mUseCUDA ? "CUDA" : "CPU") << "): " << e.what() << std::endl;
     }
 }
 
@@ -313,7 +381,7 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
 {
     cv::Mat heatmap, descTensor;
     runInference(img, heatmap, descTensor);
-
+    // std::cout << "SPextractor.cc [Line 340]" << std::endl;
     if(heatmap.empty()) return;
 
     int H = heatmap.rows;
@@ -325,6 +393,7 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
     for(int y = 1; y < H - 1; y++) {
         for(int x = 1; x < W - 1; x++) {
             float score = heatmap.at<float>(y, x);
+            // std::cout << "detect: " << score << " vs " << threshold << "\n";
             if(score < threshold) continue;
 
             bool isMax = true;
@@ -344,8 +413,10 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
         }
     }
 
+    
     keypoints = rawKps;
-
+    std::cout << "Keypoints: " << keypoints.size() << std::endl;
+    
     if(!keypoints.empty() && !descTensor.empty()) {
         descriptors = cv::Mat(keypoints.size(), SP_DESC_DIM, CV_32F);
 
@@ -372,6 +443,25 @@ void SPextractor::detect(const cv::Mat& img, std::vector<cv::KeyPoint>& keypoint
             }
         }
     }
+    {
+        cv::Mat vis;
+        if(img.channels() == 1)
+            cv::cvtColor(img, vis, cv::COLOR_GRAY2BGR);
+        else
+            vis = img.clone();
+
+        for(size_t i = 0; i < keypoints.size(); i++) {
+            float r = keypoints[i].response;
+            int g = std::min(255, (int)(r * 2550));
+            cv::circle(vis, keypoints[i].pt, 1, cv::Scalar(0, 0, 255), -1);
+        }
+        std::cout << "  detect result: " << keypoints.size() << " keypoints, "
+                  << "desc " << (descriptors.empty() ? "EMPTY" :
+                     std::to_string(descriptors.rows) + "x" + std::to_string(descriptors.cols))
+                  << std::endl;
+        cv::imshow("SP keypoints", vis);
+        cv::waitKey(1);
+    }
 }
 
 vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& vToDistributeKeys,
@@ -381,11 +471,11 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
 {
     const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
     const float hX = static_cast<float>(maxX-minX)/nIni;
-
+    // std::cout << "SPextractor.cc [Line 408]" << std::endl;
     list<ExtractorNode> lNodes;
     vector<ExtractorNode*> vpIniNodes;
     vpIniNodes.resize(nIni);
-
+    // std::cout << "SPextractor.cc [Line 412]" << std::endl;
     for(int i=0; i<nIni; i++)
     {
         ExtractorNode ni;
@@ -394,17 +484,21 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
         ni.BL = cv::Point2i(ni.UL.x,maxY-minY);
         ni.BR = cv::Point2i(ni.UR.x,maxY-minY);
         ni.vKeys.reserve(vToDistributeKeys.size());
-
+        // std::cout << "SPextractor.cc [Line 421]" << std::endl;
         lNodes.push_back(ni);
         vpIniNodes[i] = &lNodes.back();
     }
-
+    // std::cout << "SPextractor.cc [Line 425]" << std::endl;
     for(size_t i=0;i<vToDistributeKeys.size();i++)
     {
         const cv::KeyPoint &kp = vToDistributeKeys[i];
-        vpIniNodes[kp.pt.x/hX]->vKeys.push_back(kp);
+        // std::cout << vpIniNodes.size() << " " << (int)(kp.pt.x/hX) << std::endl;
+        // std::cout << vpIniNodes[kp.pt.x/hX]->vKeys.size() << std::endl;
+        if(vpIniNodes.size() > (int)(kp.pt.x/hX)) {
+            vpIniNodes[kp.pt.x/hX]->vKeys.push_back(kp);
+        }
     }
-
+    // std::cout << "SPextractor.cc [Line 431]" << std::endl;
     list<ExtractorNode>::iterator lit = lNodes.begin();
     while(lit!=lNodes.end())
     {
@@ -418,12 +512,12 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
         else
             lit++;
     }
-
+    // std::cout << "SPextractor.cc [Line 445]" << std::endl;
     bool bFinish = false;
     int iteration = 0;
     vector<pair<int,ExtractorNode*> > vSizeAndPointerToNode;
     vSizeAndPointerToNode.reserve(lNodes.size()*4);
-
+    // std::cout << "SPextractor.cc [Line 450]" << std::endl;
     while(!bFinish)
     {
         iteration++;
@@ -488,7 +582,7 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
             }
         }
     }
-
+    // std::cout << "SPextractor.cc [Line 515]" << std::endl;
     vector<cv::KeyPoint> vResultKeys;
     vResultKeys.reserve(nfeatures);
     for(list<ExtractorNode>::iterator lit=lNodes.begin(); lit!=lNodes.end(); lit++)
@@ -515,29 +609,42 @@ vector<cv::KeyPoint> SPextractor::DistributeOctTree(const vector<cv::KeyPoint>& 
 void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints, cv::Mat &_desc)
 {
     allKeypoints.resize(nlevels);
-
+    // std::cout << "SPextractor.cc [Line 542]" << std::endl;
     vector<cv::Mat> allDescriptors(nlevels);
-
+    // std::cout << "SPextractor.cc [Line 544] " << nlevels << std::endl;
     for(int level = 0; level < nlevels; level++)
     {
+        // std::cout << "Level " << level << std::endl;
         const int minBorderX = EDGE_THRESHOLD-3;
         const int minBorderY = minBorderX;
         const int maxBorderX = mvImagePyramid[level].cols - EDGE_THRESHOLD+3;
         const int maxBorderY = mvImagePyramid[level].rows - EDGE_THRESHOLD+3;
+        // std::cout << "Cols: " << mvImagePyramid[level].cols << " , Rows: " << mvImagePyramid[level].rows << std::endl;
 
         vector<cv::KeyPoint> vToDistributeKeys;
         vToDistributeKeys.reserve(nfeatures*10);
 
         cv::Mat levelDesc;
-
-        float threshold = iniThFAST;
+        // std::cout << "SPextractor.cc [Line 556]" << std::endl;
+        float threshold = SP_THRESHOLD_HIGH;
+        // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, 0.017);
         detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
-
+        // cv::Mat toSave = mvImagePyramid[level].clone();
+        // // std::cout << "Detected: " << vToDistributeKeys.size() << std::endl;
+        // for(int i = 0; i < 10; i++) {
+        //     // std::cout << vToDistributeKeys[i].pt.x << ", " << vToDistributeKeys[i].pt.y << std::endl;
+        //     cv::circle(toSave, cv::Point(vToDistributeKeys[i].pt.x, vToDistributeKeys[i].pt.y), 1, cv::Scalar(0, 0, 255));
+        // }
+        // cv::imshow("Image", toSave);
+        // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
+        // std::cout << "SPextractor.cc [Line 559]" << std::endl;
+        // std::cout << "Keypoints: " << vToDistributeKeys.size() << std::endl;
         if(vToDistributeKeys.empty()) {
-            threshold = minThFAST;
+            threshold = SP_THRESHOLD_LOW;
+            // detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, 0.005);
             detect(mvImagePyramid[level], vToDistributeKeys, levelDesc, threshold);
         }
-
+        // std::cout << "SPextractor.cc [Line 564]" << std::endl;
         vector<cv::KeyPoint> filteredKeys;
         cv::Mat filteredDesc;
         for(size_t i = 0; i < vToDistributeKeys.size(); i++) {
@@ -548,12 +655,13 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
                     filteredDesc.push_back(levelDesc.row(i));
             }
         }
-
+        // std::cout << "SPextractor.cc [Line 577]" << std::endl;
+        // std::cout << filteredKeys.size() << " " << minBorderX << " " << maxBorderX << " " << minBorderY << " " << maxBorderY << " " << mnFeaturesPerLevel[level] << " " << level << std::endl;
         vector<KeyPoint> distributedKeys = DistributeOctTree(filteredKeys,
                                                               minBorderX, maxBorderX,
                                                               minBorderY, maxBorderY,
                                                               mnFeaturesPerLevel[level], level);
-
+        // std::cout << "SPextractor.cc [Line 582]" << std::endl;
         cv::Mat distributedDesc(distributedKeys.size(), SP_DESC_DIM, CV_32F);
         for(size_t i = 0; i < distributedKeys.size(); i++) {
             for(size_t j = 0; j < filteredKeys.size(); j++) {
@@ -564,7 +672,7 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
                 }
             }
         }
-
+        // std::cout << "SPextractor.cc [Line 593]" << std::endl;
         const float scaleFactor_level = mvScaleFactor[level];
         const int nkps = distributedKeys.size();
         for(int i = 0; i < nkps; i++) {
@@ -574,7 +682,7 @@ void SPextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint>>& allKeypoints
             distributedKeys[i].octave = level;
             distributedKeys[i].size = PATCH_SIZE * scaleFactor_level;
         }
-
+        // std::cout << "SPextractor.cc [Line 603]" << std::endl;
         allKeypoints[level] = distributedKeys;
         allDescriptors[level] = distributedDesc;
     }
@@ -634,30 +742,31 @@ int SPextractor::operator()(InputArray _image, InputArray _mask,
 {
     if(_image.empty())
         return -1;
-
+    // std::cout << "SPextractor.cc [Line 661]" << std::endl;
     Mat image = _image.getMat();
     assert(image.type() == CV_8UC1 );
-
+    // std::cout << "SPextractor.cc [Line 664]" << std::endl;
     ComputePyramid(image);
-
+    // std::cout << "SPextractor.cc [Line 666]" << std::endl;
     vector<vector<KeyPoint>> allKeypoints;
     cv::Mat descriptors;
     ComputeKeyPointsOctTree(allKeypoints, descriptors);
-
+    // std::cout << "SPextractor.cc [Line 670]" << std::endl;
     int nkeypoints = 0;
     for(int level = 0; level < nlevels; ++level)
         nkeypoints += (int)allKeypoints[level].size();
-
+    // std::cout << "SPextractor.cc [Line 674]" << std::endl;
     if(nkeypoints == 0) {
         _descriptors.release();
     } else {
         _descriptors.create(nkeypoints, SP_DESC_DIM, CV_32F);
-        descriptors.copyTo(_descriptors.getMat());
+        cv::Mat scaled = descriptors * SP_DESC_SCALE;
+        scaled.copyTo(_descriptors.getMat());
     }
-
+    // std::cout << "SPextractor.cc [Line 681]" << std::endl;
     _keypoints.clear();
     _keypoints.reserve(nkeypoints);
-
+    // std::cout << "SPextractor.cc [Line 684]" << std::endl;
     int offset = 0;
     int monoIndex = 0;
     for(int level = 0; level < nlevels; level++) {
@@ -672,11 +781,11 @@ int SPextractor::operator()(InputArray _image, InputArray _mask,
 
         offset += nkeypointsLevel;
     }
-
+    // std::cout << "SPextractor.cc [Line 699]" << std::endl;
     if(vLappingArea.size() >= 2) {
         monoIndex = _keypoints.size();
     }
-
+    // std::cout << "SPextractor.cc [Line 703]" << std::endl;
     return monoIndex;
 }
 

@@ -37,7 +37,7 @@
 
 #include "Eigen/Core"
 #include "sophus/se3.hpp"
-
+using namespace std;
 namespace ORB_SLAM3
 {
 #define FRAME_GRID_ROWS 48

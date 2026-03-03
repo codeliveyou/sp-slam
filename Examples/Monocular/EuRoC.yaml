@@ -67,6 +67,7 @@ ORBextractor.descriptor: ORB
 
 # Scale factor for BEBLID/TEBLID/LATCH descriptor generation (default 1.0)
 ORBextractor.descriptorScaleFactor: 1.0
+SuperPoint.enginePath: superpoint.onnx
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "Thirdparty/DBoW3/src/DBoW3.h"
-
+using namespace std;
 namespace boost {
 namespace serialization {
 

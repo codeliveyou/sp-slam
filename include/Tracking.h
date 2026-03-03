@@ -41,7 +41,7 @@
 
 #include <mutex>
 #include <unordered_set>
-
+using namespace std;
 namespace ORB_SLAM3
 {
 

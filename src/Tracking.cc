@@ -1284,16 +1284,11 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
         b_miss_params = true;
     }
 
-    node = fSettings["SuperPoint.modelPath"];
+    node = fSettings["SuperPoint.enginePath"];
     if(!node.empty() && node.isString())
         mSPEnginePath = (std::string) node;
-    else {
-        node = fSettings["SuperPoint.enginePath"];
-        if(!node.empty() && node.isString())
-            mSPEnginePath = (std::string) node;
-        else
-            mSPEnginePath = "superpoint.onnx";
-    }
+    else
+        mSPEnginePath = "superpoint.onnx";
 
     if(b_miss_params)
     {
@@ -1314,7 +1309,7 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
     cout << "- Scale Factor: " << fScaleFactor << endl;
     cout << "- Initial Threshold: " << fIniThFAST << " -> " << (float)fIniThFAST/255.0f << endl;
     cout << "- Minimum Threshold: " << fMinThFAST << " -> " << (float)fMinThFAST/255.0f << endl;
-    cout << "- Model Path: " << mSPEnginePath << endl;
+    cout << "- Engine Path: " << mSPEnginePath << endl;
 
     return true;
 }
@@ -1603,7 +1598,7 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
         else
             cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
     }
-
+    // std::cout << "Tracking.cc [Line 1601]" << std::endl;
     // Build current frame: ORB (or other) features are extracted inside the Frame constructor.
     if (mSensor == System::MONOCULAR)
     {
@@ -1621,7 +1616,7 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
         else
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
     }
-
+    // std::cout << "Tracking.cc [Line 1619]" << std::endl;
     if (mState==NO_IMAGES_YET)
         t0=timestamp;
 
@@ -1634,7 +1629,7 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
 
     lastID = mCurrentFrame.mnId;
     Track();
-
+    // std::cout << "Tracking.cc [Line 1632]" << std::endl;
     return mCurrentFrame.GetPose();
 }
 
@@ -1842,7 +1837,7 @@ void Tracking::Track()
         mpSystem->ResetActiveMap();
         return;
     }
-
+    // std::cout << "Tracking.cc [Line 1840]" << std::endl;
     Map* pCurrentMap = mpAtlas->GetCurrentMap();
     if(!pCurrentMap)
     {

@@ -21,7 +21,7 @@
 #define ORBVOCABULARY_H
 
 #include "Thirdparty/DBoW3/src/DBoW3.h"
-
+using namespace std;
 namespace ORB_SLAM3
 {
 

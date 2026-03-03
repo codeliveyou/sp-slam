@@ -140,35 +140,7 @@ int main(int argc, char **argv)
             // Pass the image to the SLAM system
             // cout << "tframe = " << tframe << endl;
             SLAM.TrackMonocular(im,tframe); // TODO change to monocular_inertial
-
-            // --- Scale estimation example (UAV with known altitude) ---
-            // Uncomment and adapt this block for your UAV setup.
-            //
-            // Sophus::SE3f Twc = SLAM.GetCurrentPose();
-            // if(Twc.translation().norm() > 1e-6f)
-            // {
-            //     // "Down" direction in camera frame.
-            //     // Adjust for your camera mounting:
-            //     //   Y-down camera convention:   d_cam = (0, 1, 0)
-            //     //   Z-forward, X-right, Y-down: d_cam = (0, 1, 0)
-            //     //   Tilted mount by angle a:    d_cam = (0, cos(a), sin(a))
-            //     Eigen::Vector3f d_cam(0.f, 1.f, 0.f);
-            //     Eigen::Vector3f d_world = Twc.rotationMatrix() * d_cam;
-            //
-            //     auto result = SLAM.QueryMapAlongDirection(d_world, 15.0f);
-            //     if(result.found)
-            //     {
-            //         float slam_dist = result.distance;
-            //         float real_alt  = 10.0f; // TODO: replace with barometer reading (meters)
-            //         float scale     = real_alt / slam_dist;
-            //         cout << "[Scale] dist=" << slam_dist
-            //              << " alt=" << real_alt
-            //              << " scale=" << scale
-            //              << " err=" << result.angularError << "deg" << endl;
-            //     }
-            // }
-            // --- End scale estimation example ---
-
+            
             #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
             #else

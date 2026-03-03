@@ -54,7 +54,7 @@
 
 #include<Eigen/Dense>
 #include<Eigen/Sparse>
-
+using namespace std;
 namespace ORB_SLAM3{
     class MLPnPsolver {
     public:
