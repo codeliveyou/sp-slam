@@ -47,6 +47,7 @@
 ******************************************************************************/
 
 #include "MLPnPsolver.h"
+#include "DUtils.h"
 
 #include <Eigen/Sparse>
 
