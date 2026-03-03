@@ -110,20 +110,67 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     bool loadedAtlas = false;
 
+    // Resolve vocabulary path: if a .yml/.yml.gz file is given, check for
+    // a pre-converted DBoW3 binary (.dbow3) next to it which loads orders
+    // of magnitude faster.  If the binary doesn't exist yet, fall back to
+    // the original file (slow YAML parse via cv::FileStorage).
+    string strVocLoadPath = strVocFile;
+    {
+        string ext;
+        if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
+            ext = ".yml.gz";
+        else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
+            ext = ".yml";
+
+        if(!ext.empty())
+        {
+            string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
+            std::ifstream probe(binPath, std::ios::binary);
+            if(probe.good())
+            {
+                cout << "Found binary vocabulary cache: " << binPath << endl;
+                strVocLoadPath = binPath;
+            }
+            else
+            {
+                cout << "NOTE: No binary cache found at " << binPath << endl;
+                cout << "Loading from YAML is very slow for large files." << endl;
+                cout << "After first load the binary cache will be created automatically." << endl;
+            }
+        }
+    }
+
     if(mStrLoadAtlasFromFile.empty())
     {
-        //Load SuperPoint Vocabulary (DBoW3)
-        cout << endl << "Loading SuperPoint Vocabulary (DBoW3). This could take a while..." << endl;
+        cout << endl << "Loading SuperPoint Vocabulary (DBoW3)..." << endl;
 
         mpVocabulary = new ORBVocabulary();
-        mpVocabulary->load(strVocFile);
+        mpVocabulary->load(strVocLoadPath);
         if(mpVocabulary->size() == 0)
         {
             cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Failed to open at: " << strVocFile << endl;
+            cerr << "Failed to open at: " << strVocLoadPath << endl;
             exit(-1);
         }
         cout << "Vocabulary loaded! (" << mpVocabulary->size() << " words)" << endl << endl;
+
+        // Auto-save binary cache so future loads are instant
+        if(strVocLoadPath == strVocFile)
+        {
+            string ext;
+            if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
+                ext = ".yml.gz";
+            else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
+                ext = ".yml";
+
+            if(!ext.empty())
+            {
+                string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
+                cout << "Saving binary vocabulary cache to: " << binPath << endl;
+                mpVocabulary->save(binPath, true);
+                cout << "Binary cache saved. Next startup will be much faster." << endl;
+            }
+        }
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
@@ -134,18 +181,35 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     }
     else
     {
-        //Load SuperPoint Vocabulary (DBoW3)
-        cout << endl << "Loading SuperPoint Vocabulary (DBoW3). This could take a while..." << endl;
+        cout << endl << "Loading SuperPoint Vocabulary (DBoW3)..." << endl;
 
         mpVocabulary = new ORBVocabulary();
-        mpVocabulary->load(strVocFile);
+        mpVocabulary->load(strVocLoadPath);
         if(mpVocabulary->size() == 0)
         {
             cerr << "Wrong path to vocabulary. " << endl;
-            cerr << "Failed to open at: " << strVocFile << endl;
+            cerr << "Failed to open at: " << strVocLoadPath << endl;
             exit(-1);
         }
         cout << "Vocabulary loaded! (" << mpVocabulary->size() << " words)" << endl << endl;
+
+        // Auto-save binary cache so future loads are instant
+        if(strVocLoadPath == strVocFile)
+        {
+            string ext;
+            if(strVocFile.size() > 7 && strVocFile.substr(strVocFile.size()-7) == ".yml.gz")
+                ext = ".yml.gz";
+            else if(strVocFile.size() > 4 && strVocFile.substr(strVocFile.size()-4) == ".yml")
+                ext = ".yml";
+
+            if(!ext.empty())
+            {
+                string binPath = strVocFile.substr(0, strVocFile.size() - ext.size()) + ".dbow3";
+                cout << "Saving binary vocabulary cache to: " << binPath << endl;
+                mpVocabulary->save(binPath, true);
+                cout << "Binary cache saved. Next startup will be much faster." << endl;
+            }
+        }
 
         //Create KeyFrame Database
         mpKeyFrameDatabase = new KeyFrameDatabase(*mpVocabulary);
